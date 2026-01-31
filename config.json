@@ -1,6 +1,6 @@
 {
   "openai_api_key": "",
-  "debug": false,
+  "debug": true,
   "buttons": [
     {
       "name": "Update Vocabulary",
