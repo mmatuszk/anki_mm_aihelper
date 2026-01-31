@@ -16,6 +16,19 @@
         "example_pinyin": "Example_Pinyin",
         "example_translation": "Example_Translation"
       }
+    },
+    {
+      "name": "M2",
+      "tooltip": "AI Chinese Grammar Update",
+      "prompt_id": "pmpt_697e60f6e1648195b2a7521aa6d1ff6b00b8b3e853ab43e0",
+      "prompt": "{{Hanzi}}",
+      "prompt_version": "latest",
+      "model": "",
+      "field_map": {
+        "english_translation": "English (GT)",
+        "notes": "Notes",
+        "pinyin": "Pinyin"
+      }
     }
   ]
 }

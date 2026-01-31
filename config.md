@@ -8,6 +8,7 @@ debug:
 
 buttons:
 - List of button definitions. Each button is added to the card editor.
+  You can define multiple buttons; each button has its own prompt and field mapping.
 
 button fields:
 - name: Button label in the editor.

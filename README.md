@@ -46,6 +46,19 @@ Example `config.json`:
         "example_pinyin": "Example_Pinyin",
         "example_translation": "Example_Translation"
       }
+    },
+    {
+      "name": "M2",
+      "tooltip": "AI Chinese Grammar Update",
+      "prompt_id": "pmpt_...",
+      "prompt": "{{Hanzi}}",
+      "prompt_version": "latest",
+      "model": "",
+      "field_map": {
+        "english_translation": "English (GT)",
+        "notes": "Notes",
+        "pinyin": "Pinyin"
+      }
     }
   ]
 }
