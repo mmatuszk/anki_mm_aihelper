@@ -1,0 +1,20 @@
+{
+  "openai_api_key": "",
+  "debug": false,
+  "buttons": [
+    {
+      "name": "Update Vocabulary",
+      "tooltip": "Call OpenAI to update this note",
+      "prompt_id": "pmpt_697e4150b734819692f399906fdaf94e071230b55cdc0e97",
+      "prompt": "{{Hanzi}}",
+      "prompt_version": "latest",
+      "model": "",
+      "field_map": {
+        "translation": "English (GT)",
+        "notes": "Notes",
+        "example_hanzi": "Example",
+        "example_pinyin": "Example_Pinyin"
+      }
+    }
+  ]
+}
