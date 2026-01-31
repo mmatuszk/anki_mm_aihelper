@@ -1,13 +1,14 @@
 import json
 import os
 import re
+import threading
 import traceback
 import urllib.error
 import urllib.request
 
 from aqt import gui_hooks, mw
 from aqt.addons import ConfigEditor
-from aqt.qt import QAction, QMenu
+from aqt.qt import QAction, QMenu, QProgressDialog, Qt
 from aqt.utils import showWarning, tooltip
 
 ADDON_NAME = "OpenAI Card Updater"
@@ -238,6 +239,140 @@ def _run_button(editor, button_cfg):
     mw.taskman.run_in_background(task, on_done)
 
 
+def _run_button_bulk(browser, button_cfg):
+    config = _get_config()
+    api_key = _get_api_key(config)
+    if not api_key:
+        showWarning("OpenAI API key not set. Set openai_api_key in config or OPENAI_API_KEY.")
+        return
+
+    prompt_id = (button_cfg.get("prompt_id") or "").strip()
+    if not prompt_id:
+        showWarning("Button is missing prompt_id.")
+        return
+
+    note_ids = browser.selectedNotes()
+    if not note_ids:
+        tooltip("No notes selected.", period=3000)
+        return
+
+    field_map = button_cfg.get("field_map") or {}
+    total = len(note_ids)
+    cancel_event = threading.Event()
+    progress_dialog = QProgressDialog("OpenAI bulk update…", "Cancel", 0, total, browser)
+    progress_dialog.setWindowTitle(ADDON_NAME)
+    progress_dialog.setWindowModality(Qt.WindowModality.ApplicationModal)
+    progress_dialog.setAutoClose(False)
+    progress_dialog.setAutoReset(False)
+    progress_dialog.canceled.connect(cancel_event.set)
+    progress_dialog.show()
+
+    def task():
+        result = {
+            "updated": 0,
+            "skipped": 0,
+            "failed": 0,
+            "cancelled": False,
+        }
+        for idx, note_id in enumerate(note_ids, start=1):
+            if cancel_event.is_set():
+                result["cancelled"] = True
+                break
+
+            note = mw.col.get_note(note_id)
+
+            if not field_map:
+                result["skipped"] += 1
+                continue
+
+            missing_fields = [f for f in field_map.values() if f not in note]
+            if missing_fields:
+                _log_debug(config, f"Skipping note {note_id}: missing fields {missing_fields}")
+                result["skipped"] += 1
+                continue
+
+            prompt_text = _expand_fields(button_cfg.get("prompt") or "", note, config)
+            prompt_text = _ensure_json_instruction(prompt_text)
+            model = (button_cfg.get("model") or "").strip()
+            prompt_version = (button_cfg.get("prompt_version") or "latest").strip()
+
+            try:
+                response_json = _call_openai(config, prompt_id, prompt_version, model, prompt_text)
+            except Exception:
+                _log_error(config, f"OpenAI request failed for note {note_id}.")
+                result["failed"] += 1
+                continue
+
+            output_text = _extract_output_text(response_json)
+            if not output_text:
+                _log_error(config, f"No output text for note {note_id}.")
+                result["failed"] += 1
+                continue
+
+            try:
+                response = json.loads(output_text)
+            except json.JSONDecodeError:
+                _log_error(config, f"Invalid JSON for note {note_id}.")
+                result["failed"] += 1
+                continue
+
+            if response.get("success") is not True:
+                _log_debug(config, f"OpenAI success=false for note {note_id}.")
+                result["failed"] += 1
+                continue
+
+            updated_any = False
+            missing_keys = []
+            for response_key, field_name in field_map.items():
+                if response_key not in response:
+                    missing_keys.append(response_key)
+                    continue
+                note[field_name] = str(response[response_key])
+                updated_any = True
+
+            if missing_keys:
+                _log_debug(config, f"Missing response keys for note {note_id}: {missing_keys}")
+
+            if updated_any:
+                note.flush()
+                result["updated"] += 1
+            else:
+                result["skipped"] += 1
+
+            mw.taskman.run_on_main(
+                lambda i=idx: (
+                    progress_dialog.setLabelText(f"OpenAI update {i}/{total}"),
+                    progress_dialog.setValue(i),
+                )
+            )
+
+        return result
+
+    def on_done(future):
+        try:
+            progress_dialog.close()
+        except Exception:
+            pass
+        try:
+            result = future.result()
+        except Exception:
+            _log_error(config, "Bulk update failed.")
+            showWarning("Bulk update failed. See console for details.")
+            return
+
+        try:
+            browser.onReset()
+        except Exception:
+            pass
+
+        summary = f"Updated: {result['updated']}, Skipped: {result['skipped']}, Failed: {result['failed']}"
+        if result.get("cancelled"):
+            summary = f"Cancelled. {summary}"
+        tooltip(summary, period=4000)
+
+    mw.taskman.run_in_background(task, on_done, uses_collection=True)
+
+
 def _add_editor_buttons(buttons, editor):
     config = _get_config()
     button_cfgs = config.get("buttons") or []
@@ -259,6 +394,25 @@ def _add_editor_buttons(buttons, editor):
         )
         buttons.append(button)
     return buttons
+
+
+def _setup_browser_menu(browser):
+    menu = QMenu(ADDON_NAME, browser)
+    button_cfgs = _get_config().get("buttons") or []
+    if not button_cfgs:
+        action = QAction("No buttons configured", browser)
+        action.setEnabled(False)
+        menu.addAction(action)
+    else:
+        for idx, button_cfg in enumerate(button_cfgs):
+            label = (button_cfg.get("name") or f"Button {idx + 1}").strip()
+            action = QAction(label, browser)
+            action.triggered.connect(
+                lambda checked=False, cfg=button_cfg, br=browser: _run_button_bulk(br, cfg)
+            )
+            menu.addAction(action)
+
+    browser.form.menu_Notes.addMenu(menu)
 
 
 def _open_config():
@@ -284,3 +438,4 @@ def _setup_menu():
 
 _setup_menu()
 gui_hooks.editor_did_init_buttons.append(_add_editor_buttons)
+gui_hooks.browser_menus_did_init.append(_setup_browser_menu)
