@@ -3,8 +3,8 @@
   "debug": true,
   "buttons": [
     {
-      "name": "Update Vocabulary",
-      "tooltip": "Call OpenAI to update this note",
+      "name": "M1",
+      "tooltip": "AI Chinese Vocabulary Update",
       "prompt_id": "pmpt_697e4150b734819692f399906fdaf94e071230b55cdc0e97",
       "prompt": "{{Hanzi}}",
       "prompt_version": "latest",
@@ -13,7 +13,8 @@
         "translation": "English (GT)",
         "notes": "Notes",
         "example_hanzi": "Example",
-        "example_pinyin": "Example_Pinyin"
+        "example_pinyin": "Example_Pinyin",
+        "example_translation": "Example_Translation"
       }
     }
   ]

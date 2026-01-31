@@ -8,7 +8,7 @@ import urllib.request
 from aqt import gui_hooks, mw
 from aqt.addons import ConfigEditor
 from aqt.qt import QAction, QMenu
-from aqt.utils import showInfo, showWarning
+from aqt.utils import showWarning, tooltip
 
 ADDON_NAME = "OpenAI Card Updater"
 OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
@@ -90,7 +90,7 @@ def _call_openai(config, prompt_id, prompt_version, model, prompt_text):
             "prompt": {prompt_key: prompt_id},
             "text": {"format": {"type": "json_object"}},
         }
-        if prompt_version:
+        if prompt_version and prompt_version.lower() != "latest":
             payload["prompt"]["version"] = prompt_version
         if prompt_text:
             payload["input"] = prompt_text
@@ -111,12 +111,12 @@ def _call_openai(config, prompt_id, prompt_version, model, prompt_text):
             return json.loads(body)
 
     try:
-        return do_request("prompt_id")
+        return do_request("id")
     except urllib.error.HTTPError as err:
         body = err.read().decode("utf-8", errors="replace")
-        if err.code == 400 and "prompt_id" in body.lower():
-            _log_debug(config, "Retrying with prompt.id after prompt_id error.")
-            return do_request("id")
+        if err.code == 400 and "id" in body.lower():
+            _log_debug(config, "Retrying with prompt_id after prompt.id error.")
+            return do_request("prompt_id")
         raise
 
 
@@ -159,20 +159,35 @@ def _handle_response(editor, note_id, button_cfg, response_json, config):
         note[field_name] = str(result[response_key])
         updated_fields.append(field_name)
 
-    if updated_fields:
-        note.flush()
+    def after_save():
         try:
             editor.loadNote(note)
         except TypeError:
             editor.loadNote()
-        showInfo(f"Updated fields: {', '.join(updated_fields)}")
-    else:
-        showInfo("No fields were updated.")
+        tooltip(f"Updated fields: {', '.join(updated_fields)}", period=3000)
+        if missing_keys:
+            showWarning(f"Missing response keys: {', '.join(missing_keys)}")
+        if missing_fields:
+            showWarning(f"Missing note fields: {', '.join(missing_fields)}")
 
-    if missing_keys:
-        showWarning(f"Missing response keys: {', '.join(missing_keys)}")
-    if missing_fields:
-        showWarning(f"Missing note fields: {', '.join(missing_fields)}")
+    if updated_fields:
+        if note.id:
+            note.flush()
+            after_save()
+        else:
+            try:
+                editor.saveNow(after_save, True)
+            except TypeError:
+                try:
+                    editor.saveNow(after_save)
+                except TypeError:
+                    editor.saveNow(True, after_save)
+    else:
+        tooltip("No fields were updated.", period=3000)
+        if missing_keys:
+            showWarning(f"Missing response keys: {', '.join(missing_keys)}")
+        if missing_fields:
+            showWarning(f"Missing note fields: {', '.join(missing_fields)}")
 
 
 def _run_button(editor, button_cfg):
@@ -201,12 +216,16 @@ def _run_button(editor, button_cfg):
         return _call_openai(config, prompt_id, prompt_version, model, prompt_text)
 
     def on_done(future):
+        mw.progress.finish()
         try:
             response_json = future.result()
         except urllib.error.HTTPError as err:
             body = err.read().decode("utf-8", errors="replace")
             _log_error(config, f"HTTP error {err.code}: {body}")
-            showWarning(f"OpenAI request failed (HTTP {err.code}).")
+            if _debug_enabled(config):
+                showWarning(f"OpenAI request failed (HTTP {err.code}).\n{body}")
+            else:
+                showWarning(f"OpenAI request failed (HTTP {err.code}).")
             return
         except Exception:
             _log_error(config, "OpenAI request failed.")
@@ -215,6 +234,7 @@ def _run_button(editor, button_cfg):
 
         _handle_response(editor, note_id, button_cfg, response_json, config)
 
+    mw.progress.start(label="OpenAI update in progress…", immediate=True)
     mw.taskman.run_in_background(task, on_done)
 
 

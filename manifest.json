@@ -1,0 +1,6 @@
+{
+  "name": "OpenAI Card Updater",
+  "package": "anki_mm_aihelper",
+  "version": "0.1.0",
+  "min_point_version": 57
+}
