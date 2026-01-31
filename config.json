@@ -1,11 +1,11 @@
 {
-  "openai_api_key": "",
+  "openai_anki_api_key": "",
   "debug": true,
   "buttons": [
     {
       "name": "M1",
       "tooltip": "AI Chinese Vocabulary Update",
-      "prompt_id": "pmpt_697e4150b734819692f399906fdaf94e071230b55cdc0e97",
+      "prompt_id": "pmpt_697e7a9fed008194af1d6d2628a6301e0bf9d7d4dbca3f56",
       "prompt": "{{Hanzi}}",
       "prompt_version": "latest",
       "model": "",
@@ -21,7 +21,7 @@
     {
       "name": "M2",
       "tooltip": "AI Chinese Grammar Update",
-      "prompt_id": "pmpt_697e60f6e1648195b2a7521aa6d1ff6b00b8b3e853ab43e0",
+      "prompt_id": "pmpt_697e7bf427b081959db560cc377157da04ba13c57743235b",
       "prompt": "{{Hanzi}}",
       "prompt_version": "latest",
       "model": "",

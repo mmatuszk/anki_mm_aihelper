@@ -1,7 +1,7 @@
 OpenAI Card Updater configuration
 
-openai_api_key:
-- Optional. If empty, the add-on will use the OPENAI_API_KEY environment variable.
+openai_anki_api_key:
+- Optional. If empty, the add-on will use the OPENAI_ANKI_API_KEY environment variable.
 
 debug:
 - true/false. When enabled, logs prompts, errors, and response payloads to the console.

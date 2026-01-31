@@ -11,7 +11,7 @@ Use OpenAI prompts to update Anki note fields from the editor.
 
 ## Requirements
 - Anki 25.09.2 (Python 3.13)
-- OpenAI API key in config or `OPENAI_API_KEY` environment variable.
+- OpenAI API key in config or `OPENAI_ANKI_API_KEY` environment variable.
 
 ## Install (symlink)
 1) In Anki: Tools → Add-ons → View Files.
@@ -29,7 +29,7 @@ Edit the add-on config via **OpenAI Card Updater → Configure…**.
 Example `config.json`:
 ```json
 {
-  "openai_api_key": "",
+  "openai_anki_api_key": "",
   "debug": true,
   "buttons": [
     {

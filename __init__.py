@@ -36,10 +36,13 @@ def _log_error(config, message):
 
 
 def _get_api_key(config):
+    key = (config.get("openai_anki_api_key") or "").strip()
+    if key:
+        return key
     key = (config.get("openai_api_key") or "").strip()
     if key:
         return key
-    env_key = (os.environ.get("OPENAI_API_KEY") or "").strip()
+    env_key = (os.environ.get("OPENAI_ANKI_API_KEY") or "").strip()
     if env_key:
         return env_key
     return ""
@@ -86,39 +89,29 @@ def _extract_output_text(response_json):
 
 
 def _call_openai(config, prompt_id, prompt_version, model, prompt_text):
-    def do_request(prompt_key):
-        payload = {
-            "prompt": {prompt_key: prompt_id},
-            "text": {"format": {"type": "json_object"}},
-        }
-        if prompt_version and prompt_version.lower() != "latest":
-            payload["prompt"]["version"] = prompt_version
-        if prompt_text:
-            payload["input"] = prompt_text
-        if model:
-            payload["model"] = model
+    payload = {
+        "prompt": {"id": prompt_id},
+        "text": {"format": {"type": "json_object"}},
+    }
+    if prompt_version and prompt_version.lower() != "latest":
+        payload["prompt"]["version"] = prompt_version
+    if prompt_text:
+        payload["input"] = prompt_text
+    if model:
+        payload["model"] = model
 
-        data = json.dumps(payload).encode("utf-8")
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {_get_api_key(config)}",
-        }
-        req = urllib.request.Request(OPENAI_RESPONSES_URL, data=data, headers=headers, method="POST")
+    data = json.dumps(payload).encode("utf-8")
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {_get_api_key(config)}",
+    }
+    req = urllib.request.Request(OPENAI_RESPONSES_URL, data=data, headers=headers, method="POST")
 
-        _log_debug(config, f"OpenAI request payload: {payload}")
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            body = resp.read().decode("utf-8")
-            _log_debug(config, f"OpenAI response body: {body}")
-            return json.loads(body)
-
-    try:
-        return do_request("id")
-    except urllib.error.HTTPError as err:
-        body = err.read().decode("utf-8", errors="replace")
-        if err.code == 400 and "id" in body.lower():
-            _log_debug(config, "Retrying with prompt_id after prompt.id error.")
-            return do_request("prompt_id")
-        raise
+    _log_debug(config, f"OpenAI request payload: {payload}")
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        body = resp.read().decode("utf-8")
+        _log_debug(config, f"OpenAI response body: {body}")
+        return json.loads(body)
 
 
 def _handle_response(editor, note_id, button_cfg, response_json, config):
@@ -195,7 +188,7 @@ def _run_button(editor, button_cfg):
     config = _get_config()
     api_key = _get_api_key(config)
     if not api_key:
-        showWarning("OpenAI API key not set. Set openai_api_key in config or OPENAI_API_KEY.")
+        showWarning("OpenAI API key not set. Set openai_anki_api_key in config or OPENAI_ANKI_API_KEY.")
         return
 
     prompt_id = (button_cfg.get("prompt_id") or "").strip()
@@ -243,7 +236,7 @@ def _run_button_bulk(browser, button_cfg):
     config = _get_config()
     api_key = _get_api_key(config)
     if not api_key:
-        showWarning("OpenAI API key not set. Set openai_api_key in config or OPENAI_API_KEY.")
+        showWarning("OpenAI API key not set. Set openai_anki_api_key in config or OPENAI_ANKI_API_KEY.")
         return
 
     prompt_id = (button_cfg.get("prompt_id") or "").strip()
@@ -298,6 +291,11 @@ def _run_button_bulk(browser, button_cfg):
 
             try:
                 response_json = _call_openai(config, prompt_id, prompt_version, model, prompt_text)
+            except urllib.error.HTTPError as err:
+                body = err.read().decode("utf-8", errors="replace")
+                _log_error(config, f"OpenAI request failed for note {note_id} (HTTP {err.code}): {body}")
+                result["failed"] += 1
+                continue
             except Exception:
                 _log_error(config, f"OpenAI request failed for note {note_id}.")
                 result["failed"] += 1
@@ -430,7 +428,7 @@ def _open_config():
 def _setup_menu():
     menu = QMenu(ADDON_NAME, mw)
     action = QAction("Configure...", mw)
-    action.setToolTip("Edit add-on config. openai_api_key can be empty if OPENAI_API_KEY is set.")
+    action.setToolTip("Edit add-on config. openai_anki_api_key can be empty if OPENAI_ANKI_API_KEY is set.")
     action.triggered.connect(_open_config)
     menu.addAction(action)
     mw.form.menubar.addMenu(menu)
