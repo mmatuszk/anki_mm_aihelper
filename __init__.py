@@ -7,9 +7,10 @@ import urllib.error
 import urllib.request
 
 from aqt import gui_hooks, mw
-from aqt.addons import ConfigEditor
 from aqt.qt import QAction, QMenu, QProgressDialog, Qt
 from aqt.utils import showWarning, tooltip
+
+from .config_ui import OpenAIConfigDialog
 
 ADDON_NAME = "OpenAI Card Updater"
 OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
@@ -415,14 +416,8 @@ def _setup_browser_menu(browser):
 
 def _open_config():
     conf = mw.addonManager.getConfig(__name__)
-    if conf is None:
-        showInfo("Add-on has no configuration.")
-        return
-    editor = ConfigEditor(mw, __name__, conf)
-    try:
-        editor.exec()
-    except AttributeError:
-        editor.show()
+    dialog = OpenAIConfigDialog(mw, __name__, conf)
+    dialog.exec()
 
 
 def _setup_menu():
@@ -431,7 +426,7 @@ def _setup_menu():
     action.setToolTip("Edit add-on config. openai_anki_api_key can be empty if OPENAI_ANKI_API_KEY is set.")
     action.triggered.connect(_open_config)
     menu.addAction(action)
-    mw.form.menubar.addMenu(menu)
+    mw.form.menuTools.addMenu(menu)
 
 
 _setup_menu()

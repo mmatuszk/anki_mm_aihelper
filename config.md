@@ -1,5 +1,7 @@
 OpenAI Card Updater configuration
 
+The add-on now edits this configuration through a custom dialog. This file documents the underlying schema that the UI reads and writes.
+
 openai_anki_api_key:
 - Optional. If empty, the add-on will use the OPENAI_ANKI_API_KEY environment variable.
 

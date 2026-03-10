@@ -26,6 +26,19 @@ ln -s "/Users/marcin/Documents/prg/anki_mm_aihelper" "/Users/marcin/Library/Appl
 ## Configuration
 Edit the add-on config via **OpenAI Card Updater → Configure…**.
 
+The add-on provides a dedicated configuration dialog for global settings, button definitions, and response-field mappings. Changes are saved explicitly with `Save`, and editor/browser windows may need to be reopened for button list changes to appear.
+
+### Config UI
+- Global settings: `openai_anki_api_key` and `debug`
+- Button management: add, duplicate, remove, reorder
+- Button fields: `name`, `tooltip`, `prompt_id`, `prompt`
+- Field mappings: one row per JSON response key to Anki field mapping
+- Advanced fields: optional `prompt_version` and `model`
+
+Validation in the dialog:
+- Blocks save for blank button names, blank prompt IDs, incomplete mapping rows, and duplicate response keys
+- Warns for unknown Anki field names, unknown `{{FieldName}}` prompt references, duplicate button names, and missing API key/env var
+
 Example `config.json`:
 ```json
 {
