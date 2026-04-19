@@ -1,19 +1,27 @@
 import json
 import os
 import re
+import socket
 import threading
+import time
 import traceback
 import urllib.error
 import urllib.request
 
 from aqt import gui_hooks, mw
-from aqt.qt import QAction, QMenu, QProgressDialog, Qt
+from aqt.qt import QAction, QMenu, QMessageBox, QProgressDialog, Qt
 from aqt.utils import showWarning, tooltip
 
 from .config_ui import OpenAIConfigDialog
 
 ADDON_NAME = "OpenAI Card Updater"
 OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
+MANIFEST_PATH = os.path.join(os.path.dirname(__file__), "manifest.json")
+DEFAULT_REQUEST_TIMEOUT_SECONDS = 90
+RETRYABLE_HTTP_STATUS_CODES = {429, 500, 502, 503, 504}
+SINGLE_NOTE_RETRY_ATTEMPTS = 1
+BULK_RETRY_ATTEMPTS = 1
+BULK_RETRY_DELAY_SECONDS = 1.5
 
 
 def _get_config():
@@ -21,8 +29,26 @@ def _get_config():
     return config or {}
 
 
+def _get_addon_version():
+    try:
+        with open(MANIFEST_PATH, "r", encoding="utf-8") as manifest_file:
+            manifest = json.load(manifest_file)
+    except Exception:
+        return "unknown"
+    return str(manifest.get("version") or "unknown")
+
+
 def _debug_enabled(config):
     return bool(config.get("debug"))
+
+
+def _request_timeout_seconds(config):
+    raw_timeout = config.get("request_timeout_seconds", DEFAULT_REQUEST_TIMEOUT_SECONDS)
+    try:
+        timeout = int(raw_timeout)
+    except (TypeError, ValueError):
+        timeout = DEFAULT_REQUEST_TIMEOUT_SECONDS
+    return max(10, timeout)
 
 
 def _log_debug(config, message):
@@ -89,7 +115,83 @@ def _extract_output_text(response_json):
     return combined
 
 
-def _call_openai(config, prompt_id, prompt_version, model, prompt_text):
+def _read_http_error_body(err):
+    try:
+        return err.read().decode("utf-8", errors="replace")
+    except Exception:
+        return ""
+
+
+def _classify_openai_error(err, timeout_seconds):
+    if isinstance(err, urllib.error.HTTPError):
+        body = _read_http_error_body(err)
+        retryable = err.code in RETRYABLE_HTTP_STATUS_CODES
+        user_message = f"OpenAI request failed (HTTP {err.code})."
+        if err.code == 429:
+            user_message = "OpenAI rate limit reached (HTTP 429)."
+        elif retryable:
+            user_message = f"OpenAI temporary server error (HTTP {err.code})."
+        if body:
+            log_message = f"HTTP error {err.code}: {body}"
+        else:
+            log_message = f"HTTP error {err.code}"
+        return {
+            "retryable": retryable,
+            "user_message": user_message,
+            "details": body,
+            "log_message": log_message,
+            "category": "http",
+        }
+
+    if isinstance(err, (TimeoutError, socket.timeout)):
+        return {
+            "retryable": True,
+            "user_message": f"OpenAI request timed out after {timeout_seconds}s.",
+            "details": "",
+            "log_message": f"OpenAI request timed out after {timeout_seconds}s.",
+            "category": "timeout",
+        }
+
+    if isinstance(err, urllib.error.URLError):
+        reason = str(getattr(err, "reason", err))
+        return {
+            "retryable": True,
+            "user_message": f"Network error contacting OpenAI: {reason}",
+            "details": reason,
+            "log_message": f"Network error contacting OpenAI: {reason}",
+            "category": "network",
+        }
+
+    return {
+        "retryable": False,
+        "user_message": "OpenAI request failed. See console for details.",
+        "details": "",
+        "log_message": f"OpenAI request failed: {err}",
+        "category": "unknown",
+    }
+
+
+def _show_openai_error(parent, title, error_info, debug_enabled, offer_retry):
+    box = QMessageBox(parent)
+    box.setWindowTitle(title)
+    box.setIcon(QMessageBox.Icon.Warning)
+    box.setText(error_info["user_message"])
+    if debug_enabled and error_info["details"]:
+        box.setDetailedText(error_info["details"])
+    if offer_retry:
+        box.setInformativeText("Do you want to retry the request?")
+        box.setStandardButtons(
+            QMessageBox.StandardButton.Retry | QMessageBox.StandardButton.Cancel
+        )
+        box.setDefaultButton(QMessageBox.StandardButton.Retry)
+        return box.exec() == QMessageBox.StandardButton.Retry
+
+    box.setStandardButtons(QMessageBox.StandardButton.Ok)
+    box.exec()
+    return False
+
+
+def _call_openai(config, prompt_id, prompt_version, model, prompt_text, timeout_seconds):
     payload = {
         "prompt": {"id": prompt_id},
         "text": {"format": {"type": "json_object"}},
@@ -109,7 +211,7 @@ def _call_openai(config, prompt_id, prompt_version, model, prompt_text):
     req = urllib.request.Request(OPENAI_RESPONSES_URL, data=data, headers=headers, method="POST")
 
     _log_debug(config, f"OpenAI request payload: {payload}")
-    with urllib.request.urlopen(req, timeout=60) as resp:
+    with urllib.request.urlopen(req, timeout=timeout_seconds) as resp:
         body = resp.read().decode("utf-8")
         _log_debug(config, f"OpenAI response body: {body}")
         return json.loads(body)
@@ -206,31 +308,56 @@ def _run_button(editor, button_cfg):
     model = (button_cfg.get("model") or "").strip()
     prompt_version = (button_cfg.get("prompt_version") or "latest").strip()
     note_id = editor.note.id
+    timeout_seconds = _request_timeout_seconds(config)
 
-    def task():
-        return _call_openai(config, prompt_id, prompt_version, model, prompt_text)
+    def start_request(attempt):
+        def task():
+            return _call_openai(
+                config,
+                prompt_id,
+                prompt_version,
+                model,
+                prompt_text,
+                timeout_seconds,
+            )
 
-    def on_done(future):
-        mw.progress.finish()
-        try:
-            response_json = future.result()
-        except urllib.error.HTTPError as err:
-            body = err.read().decode("utf-8", errors="replace")
-            _log_error(config, f"HTTP error {err.code}: {body}")
-            if _debug_enabled(config):
-                showWarning(f"OpenAI request failed (HTTP {err.code}).\n{body}")
-            else:
-                showWarning(f"OpenAI request failed (HTTP {err.code}).")
-            return
-        except Exception:
-            _log_error(config, "OpenAI request failed.")
-            showWarning("OpenAI request failed. See console for details.")
-            return
+        def on_done(future):
+            mw.progress.finish()
 
-        _handle_response(editor, note_id, button_cfg, response_json, config)
+            try:
+                response_json = future.result()
+            except Exception as err:
+                error_info = _classify_openai_error(err, timeout_seconds)
+                _log_error(config, error_info["log_message"])
+                if error_info["retryable"] and attempt <= SINGLE_NOTE_RETRY_ATTEMPTS:
+                    if _show_openai_error(
+                        editor.parentWindow,
+                        "OpenAI Request Failed",
+                        error_info,
+                        _debug_enabled(config),
+                        offer_retry=True,
+                    ):
+                        start_request(attempt + 1)
+                    return
+                if not error_info["retryable"] or attempt > SINGLE_NOTE_RETRY_ATTEMPTS:
+                    _show_openai_error(
+                        editor.parentWindow,
+                        "OpenAI Request Failed",
+                        error_info,
+                        _debug_enabled(config),
+                        offer_retry=False,
+                    )
+                    return
 
-    mw.progress.start(label="OpenAI update in progress…", immediate=True)
-    mw.taskman.run_in_background(task, on_done)
+            _handle_response(editor, note_id, button_cfg, response_json, config)
+
+        mw.progress.start(
+            label=f"OpenAI update in progress… (timeout {timeout_seconds}s)",
+            immediate=True,
+        )
+        mw.taskman.run_in_background(task, on_done)
+
+    start_request(1)
 
 
 def _run_button_bulk(browser, button_cfg):
@@ -252,6 +379,7 @@ def _run_button_bulk(browser, button_cfg):
 
     field_map = button_cfg.get("field_map") or {}
     total = len(note_ids)
+    timeout_seconds = _request_timeout_seconds(config)
     cancel_event = threading.Event()
     progress_dialog = QProgressDialog("OpenAI bulk update…", "Cancel", 0, total, browser)
     progress_dialog.setWindowTitle(ADDON_NAME)
@@ -267,6 +395,8 @@ def _run_button_bulk(browser, button_cfg):
             "skipped": 0,
             "failed": 0,
             "cancelled": False,
+            "retried": 0,
+            "timed_out": 0,
         }
         for idx, note_id in enumerate(note_ids, start=1):
             if cancel_event.is_set():
@@ -290,16 +420,39 @@ def _run_button_bulk(browser, button_cfg):
             model = (button_cfg.get("model") or "").strip()
             prompt_version = (button_cfg.get("prompt_version") or "latest").strip()
 
-            try:
-                response_json = _call_openai(config, prompt_id, prompt_version, model, prompt_text)
-            except urllib.error.HTTPError as err:
-                body = err.read().decode("utf-8", errors="replace")
-                _log_error(config, f"OpenAI request failed for note {note_id} (HTTP {err.code}): {body}")
-                result["failed"] += 1
-                continue
-            except Exception:
-                _log_error(config, f"OpenAI request failed for note {note_id}.")
-                result["failed"] += 1
+            response_json = None
+            for attempt in range(BULK_RETRY_ATTEMPTS + 1):
+                try:
+                    response_json = _call_openai(
+                        config,
+                        prompt_id,
+                        prompt_version,
+                        model,
+                        prompt_text,
+                        timeout_seconds,
+                    )
+                    break
+                except Exception as err:
+                    error_info = _classify_openai_error(err, timeout_seconds)
+                    _log_error(
+                        config,
+                        f"OpenAI request failed for note {note_id}. {error_info['log_message']}",
+                    )
+                    if attempt < BULK_RETRY_ATTEMPTS and error_info["retryable"]:
+                        result["retried"] += 1
+                        _log_debug(
+                            config,
+                            f"Retrying note {note_id} after {BULK_RETRY_DELAY_SECONDS}s due to {error_info['category']} error.",
+                        )
+                        time.sleep(BULK_RETRY_DELAY_SECONDS)
+                        continue
+                    if error_info["category"] == "timeout":
+                        result["timed_out"] += 1
+                    result["failed"] += 1
+                    response_json = None
+                    break
+
+            if response_json is None:
                 continue
 
             output_text = _extract_output_text(response_json)
@@ -364,7 +517,12 @@ def _run_button_bulk(browser, button_cfg):
         except Exception:
             pass
 
-        summary = f"Updated: {result['updated']}, Skipped: {result['skipped']}, Failed: {result['failed']}"
+        summary = (
+            f"Updated: {result['updated']}, Skipped: {result['skipped']}, "
+            f"Failed: {result['failed']}, Retried: {result['retried']}"
+        )
+        if result["timed_out"]:
+            summary += f", Timeouts: {result['timed_out']}"
         if result.get("cancelled"):
             summary = f"Cancelled. {summary}"
         tooltip(summary, period=4000)
@@ -420,12 +578,24 @@ def _open_config():
     dialog.exec()
 
 
+def _show_about():
+    version = _get_addon_version()
+    QMessageBox.information(
+        mw,
+        "About OpenAI Card Updater",
+        f"{ADDON_NAME}\nVersion {version}",
+    )
+
+
 def _setup_menu():
     menu = QMenu(ADDON_NAME, mw)
-    action = QAction("Configure...", mw)
-    action.setToolTip("Edit add-on config. openai_anki_api_key can be empty if OPENAI_ANKI_API_KEY is set.")
-    action.triggered.connect(_open_config)
-    menu.addAction(action)
+    configure_action = QAction("Configure...", mw)
+    configure_action.setToolTip("Edit add-on config. openai_anki_api_key can be empty if OPENAI_ANKI_API_KEY is set.")
+    configure_action.triggered.connect(_open_config)
+    menu.addAction(configure_action)
+    about_action = QAction("About", mw)
+    about_action.triggered.connect(_show_about)
+    menu.addAction(about_action)
     mw.form.menuTools.addMenu(menu)
 
 

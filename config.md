@@ -8,6 +8,9 @@ openai_anki_api_key:
 debug:
 - true/false. When enabled, logs prompts, errors, and response payloads to the console.
 
+request_timeout_seconds:
+- Integer timeout for each OpenAI request. Defaults to 90 seconds.
+
 buttons:
 - List of button definitions. Each button is added to the card editor.
   You can define multiple buttons; each button has its own prompt and field mapping.
@@ -28,4 +31,5 @@ Response JSON requirements:
 
 Note:
 - OpenAI JSON mode requires the word "JSON" to appear in the prompt context. If it is missing from your prompt text, the add-on appends "Return output as JSON."
-- The add-on sends your prompt_id to OpenAI as prompt.id and retries with prompt.prompt_id if the API rejects prompt.id.
+- Single-note requests offer one manual retry for transient failures like timeouts, network errors, and HTTP 429/5xx responses.
+- Bulk requests automatically retry transient failures once with a short delay.

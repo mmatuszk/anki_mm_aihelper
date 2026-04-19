@@ -22,6 +22,7 @@ from aqt.qt import (
     QScrollArea,
     QSizePolicy,
     QSplitter,
+    QSpinBox,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -42,6 +43,7 @@ BUTTON_DEFAULTS = {
 TOP_LEVEL_DEFAULTS = {
     "openai_anki_api_key": "",
     "debug": False,
+    "request_timeout_seconds": 90,
     "buttons": [],
 }
 
@@ -82,6 +84,11 @@ def normalize_config(raw):
         current = config.get(key)
         if key == "debug":
             config[key] = bool(current) if current is not None else value
+        elif key == "request_timeout_seconds":
+            try:
+                config[key] = int(current) if current is not None else value
+            except (TypeError, ValueError):
+                config[key] = value
         elif current is None:
             config[key] = value
         else:
@@ -212,10 +219,14 @@ class OpenAIConfigDialog(QDialog):
         global_form.addRow("API Key", api_key_row)
         helper = QLabel("Optional. If empty, OPENAI_ANKI_API_KEY will be used.")
         helper.setWordWrap(True)
-        helper.setStyleSheet("color: palette(mid);")
         global_form.addRow("", helper)
         self.debug_checkbox = QCheckBox("Enable debug logging")
         global_form.addRow("", self.debug_checkbox)
+        self.request_timeout_input = QSpinBox()
+        self.request_timeout_input.setMinimum(10)
+        self.request_timeout_input.setMaximum(300)
+        self.request_timeout_input.setSuffix(" s")
+        global_form.addRow("Request Timeout", self.request_timeout_input)
         right_layout.addWidget(global_group)
 
         details_group = QGroupBox("Button Details")
@@ -228,7 +239,6 @@ class OpenAIConfigDialog(QDialog):
         self.prompt_input.setMinimumHeight(120)
         prompt_helper = QLabel("Supports {{FieldName}} expansion from the current note.")
         prompt_helper.setWordWrap(True)
-        prompt_helper.setStyleSheet("color: palette(mid);")
         details_form.addRow("Name", self.name_input)
         details_form.addRow("Tooltip", self.tooltip_input)
         details_form.addRow("Prompt ID", self.prompt_id_input)
@@ -242,14 +252,12 @@ class OpenAIConfigDialog(QDialog):
             "Each row maps one JSON response key from OpenAI to one Anki field."
         )
         mapping_header.setWordWrap(True)
-        mapping_header.setStyleSheet("color: palette(windowText);")
         mappings_layout.addWidget(mapping_header)
 
         mapping_subheader = QLabel(
             "Left: response key returned by OpenAI. Right: Anki field to update."
         )
         mapping_subheader.setWordWrap(True)
-        mapping_subheader.setStyleSheet("color: palette(windowText);")
         mappings_layout.addWidget(mapping_subheader)
 
         mapping_labels = QWidget()
@@ -343,6 +351,7 @@ class OpenAIConfigDialog(QDialog):
     def _load_global_fields(self):
         self.api_key_input.setText(self.working_config.get("openai_anki_api_key", ""))
         self.debug_checkbox.setChecked(bool(self.working_config.get("debug")))
+        self.request_timeout_input.setValue(int(self.working_config.get("request_timeout_seconds", 90)))
 
     def _refresh_button_list(self):
         self.button_list.blockSignals(True)
@@ -520,6 +529,7 @@ class OpenAIConfigDialog(QDialog):
         config = dict(self.working_config)
         config["openai_anki_api_key"] = self.api_key_input.text().strip()
         config["debug"] = self.debug_checkbox.isChecked()
+        config["request_timeout_seconds"] = self.request_timeout_input.value()
         config["buttons"] = [normalize_button(button) for button in self.working_config["buttons"]]
         return config
 

@@ -1,6 +1,7 @@
 {
   "openai_anki_api_key": "",
   "debug": true,
+  "request_timeout_seconds": 90,
   "buttons": [
     {
       "name": "M1",

@@ -7,6 +7,9 @@ Use OpenAI prompts to update Anki note fields from the editor.
 - Prompt ID + optional version + optional model override.
 - Expands `{{FieldName}}` in the user prompt from the current note.
 - Maps JSON response keys to Anki fields.
+- Cancel button for bulk OpenAI requests.
+- About menu entry showing the installed add-on version.
+- Configurable OpenAI request timeout, manual retry for single-note requests, and automatic retry for bulk transient failures.
 - Debug logging when enabled.
 
 ## Requirements
@@ -29,7 +32,7 @@ Edit the add-on config via **OpenAI Card Updater → Configure…**.
 The add-on provides a dedicated configuration dialog for global settings, button definitions, and response-field mappings. Changes are saved explicitly with `Save`, and editor/browser windows may need to be reopened for button list changes to appear.
 
 ### Config UI
-- Global settings: `openai_anki_api_key` and `debug`
+- Global settings: `openai_anki_api_key`, `debug`, and `request_timeout_seconds`
 - Button management: add, duplicate, remove, reorder
 - Button fields: `name`, `tooltip`, `prompt_id`, `prompt`
 - Field mappings: one row per JSON response key to Anki field mapping
@@ -44,6 +47,7 @@ Example `config.json`:
 {
   "openai_anki_api_key": "",
   "debug": true,
+  "request_timeout_seconds": 90,
   "buttons": [
     {
       "name": "Update Vocabulary",
@@ -92,6 +96,44 @@ OpenAI must return valid JSON with a `success` boolean:
 
 If `success` is `false`, the add-on shows `error` or `message` from the response.
 
+## Planned Refactor
+The next major config/schema change is planned to remove the current OpenAI-only `prompt_id`-centric design in favor of a provider-based button model. Backward compatibility is not a goal for that refactor.
+
+Planned button model:
+- `provider`: for example `openai` or `deepseek`
+- `mode`: `saved_prompt` or `manual`
+- `model`
+- `saved_prompt_id`
+- `saved_prompt_version`
+- `system_prompt`
+- `user_prompt`
+- `field_map`
+
+Planned behavior:
+- OpenAI `saved_prompt` mode: use `saved_prompt_id` plus local `user_prompt`
+- OpenAI `manual` mode: send `system_prompt` plus `user_prompt`
+- DeepSeek `manual` mode: send `system_prompt` plus `user_prompt`
+- `{{FieldName}}` expansion in both `system_prompt` and `user_prompt`
+
+Planned provider config:
+- top-level `providers` block instead of a single provider-specific key
+- separate credentials for providers such as OpenAI and DeepSeek
+
+Planned import/export:
+- export/import for a single button
+- export/import for the full config
+- JSON export format with explicit `schema_version`
+- API keys excluded from export by default
+- import merges into the current config instead of replacing it
+- duplicate imported button names will be renamed, for example `CV (Imported)` then `CV (Imported 2)`
+
+Planned UI changes:
+- provider selector per button
+- mode selector per button
+- conditional fields based on provider + mode
+- button-level `Import` / `Export`
+- global `Import All` / `Export All`
+
 ## Usage
 1) Open a card in the editor.
 2) Click the configured button.
@@ -100,4 +142,6 @@ If `success` is `false`, the add-on shows `error` or `message` from the response
 ## Notes
 - If `prompt_version` is `"latest"`, the add-on omits the version field and OpenAI uses the latest prompt version.
 - The prompt text is forced to mention JSON if it doesn’t already.
+- Single-note requests offer one manual retry for transient failures like timeouts, network errors, and HTTP 429/5xx responses.
+- Bulk requests automatically retry transient failures once with a short delay.
 - When `debug` is enabled, request/response details are logged to the console.
