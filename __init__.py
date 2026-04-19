@@ -12,7 +12,7 @@ from aqt import gui_hooks, mw
 from aqt.qt import QAction, QMenu, QMessageBox, QProgressDialog, Qt
 from aqt.utils import showWarning, tooltip
 
-from .config_ui import OpenAIConfigDialog
+from .config_ui import OpenAIConfigDialog, normalize_button, normalize_config
 
 ADDON_NAME = "OpenAI Card Updater"
 OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
@@ -26,7 +26,7 @@ BULK_RETRY_DELAY_SECONDS = 1.5
 
 def _get_config():
     config = mw.addonManager.getConfig(__name__)
-    return config or {}
+    return normalize_config(config or {})
 
 
 def _get_addon_version():
@@ -56,13 +56,17 @@ def _log_debug(config, message):
         print(f"[{ADDON_NAME}] {message}")
 
 
-def _log_error(config, message):
+def _log_error(config, message, include_traceback=True):
     print(f"[{ADDON_NAME}] ERROR: {message}")
-    if _debug_enabled(config):
+    if include_traceback and _debug_enabled(config):
         traceback.print_exc()
 
 
-def _get_api_key(config):
+def _get_openai_api_key(config):
+    providers = config.get("providers") or {}
+    key = str(providers.get("openai_api_key") or "").strip()
+    if key:
+        return key
     key = (config.get("openai_anki_api_key") or "").strip()
     if key:
         return key
@@ -89,12 +93,13 @@ def _expand_fields(template, note, config):
     return re.sub(r"{{(.*?)}}", replace, template)
 
 
-def _ensure_json_instruction(text):
-    if "json" in text.lower():
-        return text
-    if not text:
-        return "Return output as JSON."
-    return f"{text}\n\nReturn output as JSON."
+def _ensure_json_instruction(system_text, user_text):
+    user_lower = (user_text or "").lower()
+    if "json" in user_lower:
+        return system_text, user_text
+    if not user_text:
+        return system_text, "Return output as JSON."
+    return system_text, f"{user_text}\n\nReturn output as JSON."
 
 
 def _extract_output_text(response_json):
@@ -122,15 +127,34 @@ def _read_http_error_body(err):
         return ""
 
 
+def _extract_openai_error_message(body):
+    if not body:
+        return ""
+    try:
+        payload = json.loads(body)
+    except Exception:
+        return ""
+    error = payload.get("error")
+    if not isinstance(error, dict):
+        return ""
+    message = error.get("message")
+    if not message:
+        return ""
+    return str(message).strip()
+
+
 def _classify_openai_error(err, timeout_seconds):
     if isinstance(err, urllib.error.HTTPError):
         body = _read_http_error_body(err)
+        api_message = _extract_openai_error_message(body)
         retryable = err.code in RETRYABLE_HTTP_STATUS_CODES
         user_message = f"OpenAI request failed (HTTP {err.code})."
         if err.code == 429:
             user_message = "OpenAI rate limit reached (HTTP 429)."
         elif retryable:
             user_message = f"OpenAI temporary server error (HTTP {err.code})."
+        elif api_message:
+            user_message = f"OpenAI error: {api_message}"
         if body:
             log_message = f"HTTP error {err.code}: {body}"
         else:
@@ -172,6 +196,12 @@ def _classify_openai_error(err, timeout_seconds):
 
 
 def _show_openai_error(parent, title, error_info, debug_enabled, offer_retry):
+    if callable(parent):
+        try:
+            parent = parent()
+        except Exception:
+            parent = None
+    parent = parent or mw.app.activeWindow() or mw
     box = QMessageBox(parent)
     box.setWindowTitle(title)
     box.setIcon(QMessageBox.Icon.Warning)
@@ -184,29 +214,52 @@ def _show_openai_error(parent, title, error_info, debug_enabled, offer_retry):
             QMessageBox.StandardButton.Retry | QMessageBox.StandardButton.Cancel
         )
         box.setDefaultButton(QMessageBox.StandardButton.Retry)
+        box.raise_()
+        box.activateWindow()
         return box.exec() == QMessageBox.StandardButton.Retry
 
     box.setStandardButtons(QMessageBox.StandardButton.Ok)
+    box.raise_()
+    box.activateWindow()
     box.exec()
     return False
 
 
-def _call_openai(config, prompt_id, prompt_version, model, prompt_text, timeout_seconds):
-    payload = {
-        "prompt": {"id": prompt_id},
-        "text": {"format": {"type": "json_object"}},
-    }
-    if prompt_version and prompt_version.lower() != "latest":
-        payload["prompt"]["version"] = prompt_version
-    if prompt_text:
-        payload["input"] = prompt_text
-    if model:
+def _call_openai(config, button_cfg, prompt_values, timeout_seconds):
+    provider = button_cfg.get("provider") or "openai"
+    mode = button_cfg.get("mode") or "saved_prompt"
+    model = (button_cfg.get("model") or "").strip()
+    payload = {"text": {"format": {"type": "json_object"}}}
+
+    if provider != "openai":
+        raise ValueError(f"Provider '{provider}' is not supported yet.")
+
+    if mode == "saved_prompt":
+        prompt_id = (button_cfg.get("saved_prompt_id") or "").strip()
+        prompt_version = (button_cfg.get("saved_prompt_version") or "latest").strip()
+        payload["prompt"] = {"id": prompt_id}
+        if prompt_version and prompt_version.lower() != "latest":
+            payload["prompt"]["version"] = prompt_version
+        if prompt_values["user_prompt"]:
+            payload["input"] = prompt_values["user_prompt"]
+    elif mode == "manual":
+        if not model:
+            raise ValueError("Model is required for manual mode.")
+        payload["model"] = model
+        if prompt_values["system_prompt"]:
+            payload["instructions"] = prompt_values["system_prompt"]
+        if prompt_values["user_prompt"]:
+            payload["input"] = prompt_values["user_prompt"]
+    else:
+        raise ValueError(f"Mode '{mode}' is not supported.")
+
+    if mode == "saved_prompt" and model:
         payload["model"] = model
 
     data = json.dumps(payload).encode("utf-8")
     headers = {
         "Content-Type": "application/json",
-        "Authorization": f"Bearer {_get_api_key(config)}",
+        "Authorization": f"Bearer {_get_openai_api_key(config)}",
     }
     req = urllib.request.Request(OPENAI_RESPONSES_URL, data=data, headers=headers, method="POST")
 
@@ -289,24 +342,31 @@ def _handle_response(editor, note_id, button_cfg, response_json, config):
 
 def _run_button(editor, button_cfg):
     config = _get_config()
-    api_key = _get_api_key(config)
+    button_cfg = normalize_button(button_cfg)
+    api_key = _get_openai_api_key(config)
     if not api_key:
-        showWarning("OpenAI API key not set. Set openai_anki_api_key in config or OPENAI_ANKI_API_KEY.")
+        showWarning("OpenAI API key not set. Set providers.openai_api_key in config or OPENAI_ANKI_API_KEY.")
         return
 
-    prompt_id = (button_cfg.get("prompt_id") or "").strip()
-    if not prompt_id:
-        showWarning("Button is missing prompt_id.")
+    provider = button_cfg.get("provider") or "openai"
+    mode = button_cfg.get("mode") or "saved_prompt"
+    if provider != "openai":
+        showWarning(f"Provider '{provider}' is not supported yet.")
         return
 
     if editor.note is None:
         showWarning("No note is loaded in the editor.")
         return
 
-    prompt_text = _expand_fields(button_cfg.get("prompt") or "", editor.note, config)
-    prompt_text = _ensure_json_instruction(prompt_text)
-    model = (button_cfg.get("model") or "").strip()
-    prompt_version = (button_cfg.get("prompt_version") or "latest").strip()
+    system_prompt = _expand_fields(button_cfg.get("system_prompt") or "", editor.note, config)
+    user_prompt = _expand_fields(button_cfg.get("user_prompt") or "", editor.note, config)
+    system_prompt, user_prompt = _ensure_json_instruction(system_prompt, user_prompt)
+    if mode == "saved_prompt" and not (button_cfg.get("saved_prompt_id") or "").strip():
+        showWarning("Button is missing saved_prompt_id.")
+        return
+    if mode == "manual" and not (button_cfg.get("model") or "").strip():
+        showWarning("Button is missing model for manual mode.")
+        return
     note_id = editor.note.id
     timeout_seconds = _request_timeout_seconds(config)
 
@@ -314,10 +374,8 @@ def _run_button(editor, button_cfg):
         def task():
             return _call_openai(
                 config,
-                prompt_id,
-                prompt_version,
-                model,
-                prompt_text,
+                button_cfg,
+                {"system_prompt": system_prompt, "user_prompt": user_prompt},
                 timeout_seconds,
             )
 
@@ -328,10 +386,10 @@ def _run_button(editor, button_cfg):
                 response_json = future.result()
             except Exception as err:
                 error_info = _classify_openai_error(err, timeout_seconds)
-                _log_error(config, error_info["log_message"])
+                _log_error(config, error_info["log_message"], include_traceback=False)
                 if error_info["retryable"] and attempt <= SINGLE_NOTE_RETRY_ATTEMPTS:
                     if _show_openai_error(
-                        editor.parentWindow,
+                        getattr(editor, "parentWindow", None),
                         "OpenAI Request Failed",
                         error_info,
                         _debug_enabled(config),
@@ -341,7 +399,7 @@ def _run_button(editor, button_cfg):
                     return
                 if not error_info["retryable"] or attempt > SINGLE_NOTE_RETRY_ATTEMPTS:
                     _show_openai_error(
-                        editor.parentWindow,
+                        getattr(editor, "parentWindow", None),
                         "OpenAI Request Failed",
                         error_info,
                         _debug_enabled(config),
@@ -362,14 +420,22 @@ def _run_button(editor, button_cfg):
 
 def _run_button_bulk(browser, button_cfg):
     config = _get_config()
-    api_key = _get_api_key(config)
+    button_cfg = normalize_button(button_cfg)
+    api_key = _get_openai_api_key(config)
     if not api_key:
-        showWarning("OpenAI API key not set. Set openai_anki_api_key in config or OPENAI_ANKI_API_KEY.")
+        showWarning("OpenAI API key not set. Set providers.openai_api_key in config or OPENAI_ANKI_API_KEY.")
         return
 
-    prompt_id = (button_cfg.get("prompt_id") or "").strip()
-    if not prompt_id:
-        showWarning("Button is missing prompt_id.")
+    provider = button_cfg.get("provider") or "openai"
+    mode = button_cfg.get("mode") or "saved_prompt"
+    if provider != "openai":
+        showWarning(f"Provider '{provider}' is not supported yet.")
+        return
+    if mode == "saved_prompt" and not (button_cfg.get("saved_prompt_id") or "").strip():
+        showWarning("Button is missing saved_prompt_id.")
+        return
+    if mode == "manual" and not (button_cfg.get("model") or "").strip():
+        showWarning("Button is missing model for manual mode.")
         return
 
     note_ids = browser.selectedNotes()
@@ -415,20 +481,17 @@ def _run_button_bulk(browser, button_cfg):
                 result["skipped"] += 1
                 continue
 
-            prompt_text = _expand_fields(button_cfg.get("prompt") or "", note, config)
-            prompt_text = _ensure_json_instruction(prompt_text)
-            model = (button_cfg.get("model") or "").strip()
-            prompt_version = (button_cfg.get("prompt_version") or "latest").strip()
+            system_prompt = _expand_fields(button_cfg.get("system_prompt") or "", note, config)
+            user_prompt = _expand_fields(button_cfg.get("user_prompt") or "", note, config)
+            system_prompt, user_prompt = _ensure_json_instruction(system_prompt, user_prompt)
 
             response_json = None
             for attempt in range(BULK_RETRY_ATTEMPTS + 1):
                 try:
                     response_json = _call_openai(
                         config,
-                        prompt_id,
-                        prompt_version,
-                        model,
-                        prompt_text,
+                        button_cfg,
+                        {"system_prompt": system_prompt, "user_prompt": user_prompt},
                         timeout_seconds,
                     )
                     break
@@ -437,6 +500,7 @@ def _run_button_bulk(browser, button_cfg):
                     _log_error(
                         config,
                         f"OpenAI request failed for note {note_id}. {error_info['log_message']}",
+                        include_traceback=False,
                     )
                     if attempt < BULK_RETRY_ATTEMPTS and error_info["retryable"]:
                         result["retried"] += 1
@@ -590,7 +654,7 @@ def _show_about():
 def _setup_menu():
     menu = QMenu(ADDON_NAME, mw)
     configure_action = QAction("Configure...", mw)
-    configure_action.setToolTip("Edit add-on config. openai_anki_api_key can be empty if OPENAI_ANKI_API_KEY is set.")
+    configure_action.setToolTip("Edit add-on config. providers.openai_api_key can be empty if OPENAI_ANKI_API_KEY is set.")
     configure_action.triggered.connect(_open_config)
     menu.addAction(configure_action)
     about_action = QAction("About", mw)

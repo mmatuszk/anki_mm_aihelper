@@ -1,15 +1,20 @@
 {
-  "openai_anki_api_key": "",
+  "providers": {
+    "openai_api_key": ""
+  },
   "debug": true,
   "request_timeout_seconds": 90,
   "buttons": [
     {
       "name": "M1",
       "tooltip": "AI Chinese Vocabulary Update",
-      "prompt_id": "pmpt_697e7a9fed008194af1d6d2628a6301e0bf9d7d4dbca3f56",
-      "prompt": "{{Hanzi}}",
-      "prompt_version": "latest",
+      "provider": "openai",
+      "mode": "saved_prompt",
       "model": "",
+      "saved_prompt_id": "pmpt_697e7a9fed008194af1d6d2628a6301e0bf9d7d4dbca3f56",
+      "saved_prompt_version": "latest",
+      "system_prompt": "",
+      "user_prompt": "{{Hanzi}}",
       "field_map": {
         "translation": "English (GT)",
         "pinyin": "Pinyin",
@@ -22,10 +27,13 @@
     {
       "name": "M2",
       "tooltip": "AI Chinese Grammar Update",
-      "prompt_id": "pmpt_697e7bf427b081959db560cc377157da04ba13c57743235b",
-      "prompt": "{{Hanzi}}",
-      "prompt_version": "latest",
+      "provider": "openai",
+      "mode": "saved_prompt",
       "model": "",
+      "saved_prompt_id": "pmpt_697e7bf427b081959db560cc377157da04ba13c57743235b",
+      "saved_prompt_version": "latest",
+      "system_prompt": "",
+      "user_prompt": "{{Hanzi}}",
       "field_map": {
         "english_translation": "English (GT)",
         "notes": "Notes",
