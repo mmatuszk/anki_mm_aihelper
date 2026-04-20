@@ -7,8 +7,10 @@ Use provider-driven prompt buttons to update Anki note fields from the editor.
 - OpenAI support with two modes:
   - `saved_prompt`: saved prompt ID + local user prompt
   - `manual`: system prompt + user prompt
-- Schema designed to support future providers such as DeepSeek, Gemini, and Claude.
+- DeepSeek support in `manual` mode.
+- Schema designed to support future providers such as Gemini and Claude.
 - Field expansion with `{{FieldName}}` in `system_prompt` and `user_prompt`.
+- Provider model lookup in the config dialog, with autocomplete for fetched model ids.
 - Field mapping from JSON response keys to Anki fields.
 - Bulk update from the Browser for selected notes.
 - Configurable request timeout.
@@ -20,6 +22,7 @@ Use provider-driven prompt buttons to update Anki note fields from the editor.
 ## Requirements
 - Anki 25.09.2 (Python 3.13)
 - OpenAI API key in config or `OPENAI_ANKI_API_KEY`
+- DeepSeek API key in config or `DEEPSEEK_ANKI_API_KEY`
 
 ## Install (symlink)
 1. In Anki: Tools -> Add-ons -> View Files
@@ -38,8 +41,14 @@ Open:
 The config dialog supports:
 - Global settings:
   - OpenAI API key
+  - DeepSeek API key
   - debug logging
   - request timeout
+
+Environment variable convention:
+- OpenAI: `OPENAI_ANKI_API_KEY`
+- DeepSeek: `DEEPSEEK_ANKI_API_KEY`
+- Future providers should follow the same pattern: `<PROVIDER>_ANKI_API_KEY`
 - Button management:
   - add
   - duplicate
@@ -47,12 +56,23 @@ The config dialog supports:
   - reorder
   - import
   - export
+- Model tools:
+  - lookup models from the selected provider
+  - autocomplete the `model` field from fetched ids
 - Global import/export:
   - import all
   - export all
 
 ### Current provider support
-Only OpenAI is implemented in `0.4.0`, but the button schema is now provider-based so future providers can be added without another config redesign.
+Current provider support in this branch:
+- OpenAI
+  - `saved_prompt`
+  - `manual`
+- DeepSeek
+  - `manual`
+
+DeepSeek uses the chat completions API and does not support `saved_prompt` mode in this add-on.
+Use `Lookup Models` in the config dialog to fetch the currently available model ids from the selected provider.
 
 ### Button model
 Each button now uses:
@@ -78,7 +98,8 @@ Mode behavior:
 ```json
 {
   "providers": {
-    "openai_api_key": ""
+    "openai_api_key": "",
+    "deepseek_api_key": ""
   },
   "debug": true,
   "request_timeout_seconds": 90,
@@ -107,6 +128,20 @@ Mode behavior:
       "saved_prompt_id": "",
       "saved_prompt_version": "latest",
       "system_prompt": "You are a Chinese teacher.",
+      "user_prompt": "Explain {{Hanzi}} and return JSON.",
+      "field_map": {
+        "notes": "Notes"
+      }
+    },
+    {
+      "name": "DeepSeek Example",
+      "tooltip": "Manual DeepSeek prompt",
+      "provider": "deepseek",
+      "mode": "manual",
+      "model": "deepseek-chat",
+      "saved_prompt_id": "",
+      "saved_prompt_version": "latest",
+      "system_prompt": "You are a Chinese teacher. Return JSON with success and notes.",
       "user_prompt": "Explain {{Hanzi}} and return JSON.",
       "field_map": {
         "notes": "Notes"
@@ -159,4 +194,5 @@ Behavior:
 ## Notes
 - `saved_prompt_version = "latest"` omits the version field in the OpenAI request.
 - The add-on ensures the request context mentions JSON.
+- DeepSeek manual mode uses `POST https://api.deepseek.com/chat/completions` with JSON output.
 - When `debug` is enabled, request/response details and retry logs are written to the console.

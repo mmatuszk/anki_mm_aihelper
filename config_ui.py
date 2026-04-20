@@ -1,6 +1,8 @@
 import json
 import os
 import re
+import urllib.error
+import urllib.request
 
 from aqt.qt import (
     QCheckBox,
@@ -31,12 +33,20 @@ from aqt.qt import (
 from aqt.utils import tooltip
 
 EXPORT_SCHEMA_VERSION = 1
-SUPPORTED_PROVIDERS = [("openai", "OpenAI")]
+SUPPORTED_PROVIDERS = [("openai", "OpenAI"), ("deepseek", "DeepSeek")]
 SUPPORTED_MODES = [
     ("saved_prompt", "Saved Prompt"),
     ("manual", "Manual"),
 ]
 FIELD_PATTERN = re.compile(r"{{(.*?)}}")
+PROVIDER_MODEL_ENDPOINTS = {
+    "openai": "https://api.openai.com/v1/models",
+    "deepseek": "https://api.deepseek.com/models",
+}
+PROVIDER_ENV_VARS = {
+    "openai": "OPENAI_ANKI_API_KEY",
+    "deepseek": "DEEPSEEK_ANKI_API_KEY",
+}
 
 
 BUTTON_DEFAULTS = {
@@ -55,6 +65,7 @@ BUTTON_DEFAULTS = {
 TOP_LEVEL_DEFAULTS = {
     "providers": {
         "openai_api_key": "",
+        "deepseek_api_key": "",
     },
     "debug": False,
     "request_timeout_seconds": 90,
@@ -109,6 +120,7 @@ def normalize_config(raw):
         or raw.get("openai_api_key")
         or ""
     )
+    deepseek_api_key = str(providers.get("deepseek_api_key") or raw.get("deepseek_api_key") or "")
 
     try:
         timeout = int(raw.get("request_timeout_seconds", TOP_LEVEL_DEFAULTS["request_timeout_seconds"]))
@@ -122,6 +134,7 @@ def normalize_config(raw):
     return {
         "providers": {
             "openai_api_key": openai_api_key,
+            "deepseek_api_key": deepseek_api_key,
         },
         "debug": bool(raw.get("debug")),
         "request_timeout_seconds": max(10, min(300, timeout)),
@@ -191,6 +204,71 @@ def _make_imported_name(existing_names, requested_name):
         index += 1
 
 
+def _provider_api_key(config, provider):
+    providers = config.get("providers", {})
+    provider_key_name = f"{provider}_api_key"
+    key = str(providers.get(provider_key_name) or "").strip()
+    if key:
+        return key
+    env_name = PROVIDER_ENV_VARS.get(provider, "")
+    return str(os.environ.get(env_name) or "").strip()
+
+
+def _read_http_error_body(err):
+    try:
+        return err.read().decode("utf-8", errors="replace")
+    except Exception:
+        return ""
+
+
+def _fetch_provider_models(config, provider, timeout_seconds):
+    url = PROVIDER_MODEL_ENDPOINTS.get(provider)
+    if not url:
+        raise ValueError(f"Provider '{provider}' does not support model lookup.")
+
+    api_key = _provider_api_key(config, provider)
+    env_name = PROVIDER_ENV_VARS.get(provider, "<PROVIDER>_ANKI_API_KEY")
+    if not api_key:
+        raise ValueError(
+            f"{_provider_label(provider)} API key not set. Configure providers.{provider}_api_key or {env_name}."
+        )
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    request = urllib.request.Request(url, headers=headers, method="GET")
+
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as err:
+        body = _read_http_error_body(err)
+        details = f"\n\n{body}" if body else ""
+        raise RuntimeError(
+            f"{_provider_label(provider)} model lookup failed (HTTP {err.code}).{details}"
+        ) from err
+    except urllib.error.URLError as err:
+        raise RuntimeError(
+            f"Network error looking up {_provider_label(provider)} models: {err.reason}"
+        ) from err
+
+    data = payload.get("data")
+    if not isinstance(data, list):
+        raise RuntimeError(f"{_provider_label(provider)} returned an unexpected models response.")
+
+    model_ids = sorted(
+        {
+            str(item.get("id")).strip()
+            for item in data
+            if isinstance(item, dict) and str(item.get("id") or "").strip()
+        }
+    )
+    if not model_ids:
+        raise RuntimeError(f"{_provider_label(provider)} returned no models.")
+    return model_ids
+
+
 class MappingRowWidget(QWidget):
     def __init__(self, field_names, response_key="", field_name="", parent=None):
         super().__init__(parent)
@@ -228,6 +306,7 @@ class OpenAIConfigDialog(QDialog):
         self.working_config = normalize_config(config)
         self.current_button_index = -1
         self.mapping_rows = []
+        self.model_completers = {}
 
         self.setWindowTitle("OpenAI Card Updater Configuration")
         self.resize(1160, 780)
@@ -302,16 +381,32 @@ class OpenAIConfigDialog(QDialog):
         api_key_layout.setContentsMargins(0, 0, 0, 0)
         self.openai_api_key_input = QLineEdit()
         self.openai_api_key_input.setEchoMode(QLineEdit.EchoMode.Password)
-        self.toggle_api_key_button = QToolButton()
-        self.toggle_api_key_button.setText("Show")
-        self.toggle_api_key_button.setCheckable(True)
-        self.toggle_api_key_button.toggled.connect(self._toggle_api_key_visibility)
+        self.toggle_openai_api_key_button = QToolButton()
+        self.toggle_openai_api_key_button.setText("Show")
+        self.toggle_openai_api_key_button.setCheckable(True)
+        self.toggle_openai_api_key_button.toggled.connect(self._toggle_openai_api_key_visibility)
         api_key_layout.addWidget(self.openai_api_key_input, 1)
-        api_key_layout.addWidget(self.toggle_api_key_button)
+        api_key_layout.addWidget(self.toggle_openai_api_key_button)
         global_form.addRow("OpenAI API Key", api_key_row)
-        helper = QLabel("Optional. If empty, OPENAI_ANKI_API_KEY will be used.")
-        helper.setWordWrap(True)
-        global_form.addRow("", helper)
+        openai_helper = QLabel("Optional. If empty, OPENAI_ANKI_API_KEY will be used.")
+        openai_helper.setWordWrap(True)
+        global_form.addRow("", openai_helper)
+
+        deepseek_api_key_row = QWidget()
+        deepseek_api_key_layout = QHBoxLayout(deepseek_api_key_row)
+        deepseek_api_key_layout.setContentsMargins(0, 0, 0, 0)
+        self.deepseek_api_key_input = QLineEdit()
+        self.deepseek_api_key_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self.toggle_deepseek_api_key_button = QToolButton()
+        self.toggle_deepseek_api_key_button.setText("Show")
+        self.toggle_deepseek_api_key_button.setCheckable(True)
+        self.toggle_deepseek_api_key_button.toggled.connect(self._toggle_deepseek_api_key_visibility)
+        deepseek_api_key_layout.addWidget(self.deepseek_api_key_input, 1)
+        deepseek_api_key_layout.addWidget(self.toggle_deepseek_api_key_button)
+        global_form.addRow("DeepSeek API Key", deepseek_api_key_row)
+        deepseek_helper = QLabel("Optional. If empty, DEEPSEEK_ANKI_API_KEY will be used.")
+        deepseek_helper.setWordWrap(True)
+        global_form.addRow("", deepseek_helper)
         self.debug_checkbox = QCheckBox("Enable debug logging")
         global_form.addRow("", self.debug_checkbox)
         self.request_timeout_input = QSpinBox()
@@ -358,9 +453,17 @@ class OpenAIConfigDialog(QDialog):
         prompt_layout.addWidget(self.saved_prompt_version_input, 2, 1)
 
         self.model_label = QLabel("Model")
+        self.model_row = QWidget()
+        model_row_layout = QHBoxLayout(self.model_row)
+        model_row_layout.setContentsMargins(0, 0, 0, 0)
+        model_row_layout.setSpacing(6)
         self.model_input = QLineEdit()
+        self.lookup_models_button = QPushButton("Lookup Models")
+        self.lookup_models_button.clicked.connect(self._lookup_models)
+        model_row_layout.addWidget(self.model_input, 1)
+        model_row_layout.addWidget(self.lookup_models_button)
         prompt_layout.addWidget(self.model_label, 3, 0)
-        prompt_layout.addWidget(self.model_input, 3, 1)
+        prompt_layout.addWidget(self.model_row, 3, 1)
 
         self.system_prompt_label = QLabel("System Prompt")
         self.system_prompt_input = QPlainTextEdit()
@@ -443,11 +546,17 @@ class OpenAIConfigDialog(QDialog):
         button_box.rejected.connect(self.reject)
         root.addWidget(button_box)
 
-    def _toggle_api_key_visibility(self, checked):
+    def _toggle_openai_api_key_visibility(self, checked):
         self.openai_api_key_input.setEchoMode(
             QLineEdit.EchoMode.Normal if checked else QLineEdit.EchoMode.Password
         )
-        self.toggle_api_key_button.setText("Hide" if checked else "Show")
+        self.toggle_openai_api_key_button.setText("Hide" if checked else "Show")
+
+    def _toggle_deepseek_api_key_visibility(self, checked):
+        self.deepseek_api_key_input.setEchoMode(
+            QLineEdit.EchoMode.Normal if checked else QLineEdit.EchoMode.Password
+        )
+        self.toggle_deepseek_api_key_button.setText("Hide" if checked else "Show")
 
     def _button_provider(self):
         return self.provider_input.currentData()
@@ -478,16 +587,62 @@ class OpenAIConfigDialog(QDialog):
             self.saved_prompt_version_input,
             saved_prompt_visible,
         )
+        self._apply_model_completer(provider)
         self._set_row_visible(self.system_prompt_label, self.system_prompt_input, manual_visible)
 
         if saved_prompt_visible:
             self.mode_helper_label.setText(
                 "Use an OpenAI saved prompt ID plus a local User Prompt."
             )
+        elif provider == "deepseek":
+            self.mode_helper_label.setText(
+                "DeepSeek currently uses manual mode only and sends System Prompt + User Prompt to /chat/completions."
+            )
         else:
             self.mode_helper_label.setText(
                 "Send System Prompt + User Prompt directly. Model is required in manual mode."
             )
+
+    def _apply_model_completer(self, provider):
+        completer = self.model_completers.get(provider)
+        self.model_input.setCompleter(completer)
+
+    def _lookup_models(self):
+        provider = str(self._button_provider() or "openai")
+        config = self._collect_config()
+        timeout_seconds = int(config.get("request_timeout_seconds", 90))
+
+        self.lookup_models_button.setEnabled(False)
+        self.lookup_models_button.setText("Loading...")
+
+        def task():
+            return _fetch_provider_models(config, provider, timeout_seconds)
+
+        def on_done(future):
+            self.lookup_models_button.setEnabled(True)
+            self.lookup_models_button.setText("Lookup Models")
+            try:
+                model_ids = future.result()
+            except Exception as err:
+                QMessageBox.warning(self, "Model Lookup Failed", str(err))
+                return
+
+            completer = QCompleter(model_ids, self.model_input)
+            completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+            self.model_completers[provider] = completer
+            self._apply_model_completer(provider)
+
+            box = QMessageBox(self)
+            box.setWindowTitle("Models Loaded")
+            box.setIcon(QMessageBox.Icon.Information)
+            box.setText(
+                f"Loaded {len(model_ids)} {_provider_label(provider)} model(s). "
+                "Autocomplete is now enabled for the Model field."
+            )
+            box.setDetailedText("\n".join(model_ids))
+            box.exec()
+
+        self.mw.taskman.run_in_background(task, on_done)
 
     def _set_button_editor_enabled(self, enabled):
         for widget in self.editor_sections:
@@ -503,6 +658,7 @@ class OpenAIConfigDialog(QDialog):
     def _load_global_fields(self):
         providers = self.working_config.get("providers", {})
         self.openai_api_key_input.setText(providers.get("openai_api_key", ""))
+        self.deepseek_api_key_input.setText(providers.get("deepseek_api_key", ""))
         self.debug_checkbox.setChecked(bool(self.working_config.get("debug")))
         self.request_timeout_input.setValue(
             int(self.working_config.get("request_timeout_seconds", 90))
@@ -699,6 +855,7 @@ class OpenAIConfigDialog(QDialog):
         return {
             "providers": {
                 "openai_api_key": self.openai_api_key_input.text().strip(),
+                "deepseek_api_key": self.deepseek_api_key_input.text().strip(),
             },
             "debug": self.debug_checkbox.isChecked(),
             "request_timeout_seconds": self.request_timeout_input.value(),
@@ -711,10 +868,7 @@ class OpenAIConfigDialog(QDialog):
         seen_button_names = {}
 
         providers = config.get("providers", {})
-        if not providers.get("openai_api_key") and not os.environ.get("OPENAI_ANKI_API_KEY"):
-            warnings.append(
-                "OpenAI API key is blank and OPENAI_ANKI_API_KEY is not currently set in the environment."
-            )
+        provider_usage = set()
 
         for index, button in enumerate(config.get("buttons", []), start=1):
             label = f"Button {index}"
@@ -722,6 +876,7 @@ class OpenAIConfigDialog(QDialog):
             provider = button.get("provider", "").strip()
             mode = button.get("mode", "").strip()
             field_map = button.get("field_map", {})
+            provider_usage.add(provider)
 
             if not name:
                 blocking.append(f"{label}: name is required.")
@@ -732,12 +887,19 @@ class OpenAIConfigDialog(QDialog):
             if provider not in {value for value, _label in SUPPORTED_PROVIDERS}:
                 blocking.append(f"{label}: unsupported provider '{provider}'.")
 
-            if mode == "saved_prompt":
+            if provider == "deepseek" and mode != "manual":
+                blocking.append(f"{label}: DeepSeek supports manual mode only.")
+            elif mode == "saved_prompt":
                 if not button.get("saved_prompt_id", "").strip():
                     blocking.append(f"{label}: saved_prompt_id is required in saved prompt mode.")
             elif mode == "manual":
                 if not button.get("model", "").strip():
                     blocking.append(f"{label}: model is required in manual mode.")
+                elif provider == "deepseek" and button.get("model", "").strip().lower().startswith("gpt-"):
+                    warnings.append(
+                        f"{label}: model '{button.get('model', '').strip()}' looks like an OpenAI model id. "
+                        "Use Lookup Models for DeepSeek and switch to a DeepSeek model such as deepseek-chat."
+                    )
                 if not button.get("system_prompt", "").strip():
                     blocking.append(f"{label}: system_prompt is required in manual mode.")
                 if not button.get("user_prompt", "").strip():
@@ -789,6 +951,15 @@ class OpenAIConfigDialog(QDialog):
         duplicate_names = sorted(name for name, count in seen_button_names.items() if count > 1)
         if duplicate_names:
             warnings.append(f"Duplicate button names found: {', '.join(duplicate_names)}.")
+
+        if "openai" in provider_usage and not providers.get("openai_api_key") and not os.environ.get("OPENAI_ANKI_API_KEY"):
+            warnings.append(
+                "OpenAI API key is blank and OPENAI_ANKI_API_KEY is not currently set in the environment."
+            )
+        if "deepseek" in provider_usage and not providers.get("deepseek_api_key") and not os.environ.get("DEEPSEEK_ANKI_API_KEY"):
+            warnings.append(
+                "DeepSeek API key is blank and DEEPSEEK_ANKI_API_KEY is not currently set in the environment."
+            )
 
         return blocking, warnings
 

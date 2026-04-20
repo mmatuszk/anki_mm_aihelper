@@ -9,6 +9,11 @@ providers:
 - Provider credentials.
 - Current supported field:
   - openai_api_key: Optional. If empty, the add-on uses OPENAI_ANKI_API_KEY.
+  - deepseek_api_key: Optional. If empty, the add-on uses DEEPSEEK_ANKI_API_KEY.
+
+Environment variable naming convention:
+- Existing providers use `<PROVIDER>_ANKI_API_KEY`, for example `OPENAI_ANKI_API_KEY` and `DEEPSEEK_ANKI_API_KEY`.
+- Future providers should follow the same pattern.
 
 debug:
 - true/false. When enabled, logs requests, responses, retries, and errors to the console.
@@ -23,13 +28,15 @@ buttons:
 Button fields:
 - name: Button label in the editor/browser.
 - tooltip: Hover tooltip.
-- provider: Current supported value is "openai".
+- provider: Current supported values are "openai" and "deepseek".
 - mode:
   - "saved_prompt": Use an OpenAI saved prompt ID plus a local user prompt.
   - "manual": Send system prompt + user prompt directly. Requires model.
+  - DeepSeek currently supports "manual" only.
 - model:
   - Optional in saved_prompt mode.
   - Required in manual mode.
+  - Use the `Lookup Models` button in the config dialog to fetch current model ids from the selected provider.
 - saved_prompt_id: Used only in saved_prompt mode.
 - saved_prompt_version: Optional in saved_prompt mode. Defaults to "latest".
 - system_prompt: Used in manual mode. Supports {{FieldName}} expansion.

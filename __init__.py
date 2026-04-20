@@ -16,6 +16,7 @@ from .config_ui import OpenAIConfigDialog, normalize_button, normalize_config
 
 ADDON_NAME = "OpenAI Card Updater"
 OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
+DEEPSEEK_CHAT_COMPLETIONS_URL = "https://api.deepseek.com/chat/completions"
 MANIFEST_PATH = os.path.join(os.path.dirname(__file__), "manifest.json")
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 90
 RETRYABLE_HTTP_STATUS_CODES = {429, 500, 502, 503, 504}
@@ -62,8 +63,23 @@ def _log_error(config, message, include_traceback=True):
         traceback.print_exc()
 
 
-def _get_openai_api_key(config):
+def _provider_label(provider):
+    if provider == "deepseek":
+        return "DeepSeek"
+    return "OpenAI"
+
+
+def _get_provider_api_key(config, provider):
     providers = config.get("providers") or {}
+    if provider == "deepseek":
+        key = str(providers.get("deepseek_api_key") or "").strip()
+        if key:
+            return key
+        env_key = (os.environ.get("DEEPSEEK_ANKI_API_KEY") or "").strip()
+        if env_key:
+            return env_key
+        return ""
+
     key = str(providers.get("openai_api_key") or "").strip()
     if key:
         return key
@@ -127,7 +143,7 @@ def _read_http_error_body(err):
         return ""
 
 
-def _extract_openai_error_message(body):
+def _extract_api_error_message(body):
     if not body:
         return ""
     try:
@@ -143,18 +159,19 @@ def _extract_openai_error_message(body):
     return str(message).strip()
 
 
-def _classify_openai_error(err, timeout_seconds):
+def _classify_provider_error(provider, err, timeout_seconds):
+    provider_label = _provider_label(provider)
     if isinstance(err, urllib.error.HTTPError):
         body = _read_http_error_body(err)
-        api_message = _extract_openai_error_message(body)
+        api_message = _extract_api_error_message(body)
         retryable = err.code in RETRYABLE_HTTP_STATUS_CODES
-        user_message = f"OpenAI request failed (HTTP {err.code})."
+        user_message = f"{provider_label} request failed (HTTP {err.code})."
         if err.code == 429:
-            user_message = "OpenAI rate limit reached (HTTP 429)."
+            user_message = f"{provider_label} rate limit reached (HTTP 429)."
         elif retryable:
-            user_message = f"OpenAI temporary server error (HTTP {err.code})."
+            user_message = f"{provider_label} temporary server error (HTTP {err.code})."
         elif api_message:
-            user_message = f"OpenAI error: {api_message}"
+            user_message = f"{provider_label} error: {api_message}"
         if body:
             log_message = f"HTTP error {err.code}: {body}"
         else:
@@ -170,9 +187,9 @@ def _classify_openai_error(err, timeout_seconds):
     if isinstance(err, (TimeoutError, socket.timeout)):
         return {
             "retryable": True,
-            "user_message": f"OpenAI request timed out after {timeout_seconds}s.",
+            "user_message": f"{provider_label} request timed out after {timeout_seconds}s.",
             "details": "",
-            "log_message": f"OpenAI request timed out after {timeout_seconds}s.",
+            "log_message": f"{provider_label} request timed out after {timeout_seconds}s.",
             "category": "timeout",
         }
 
@@ -180,22 +197,22 @@ def _classify_openai_error(err, timeout_seconds):
         reason = str(getattr(err, "reason", err))
         return {
             "retryable": True,
-            "user_message": f"Network error contacting OpenAI: {reason}",
+            "user_message": f"Network error contacting {provider_label}: {reason}",
             "details": reason,
-            "log_message": f"Network error contacting OpenAI: {reason}",
+            "log_message": f"Network error contacting {provider_label}: {reason}",
             "category": "network",
         }
 
     return {
         "retryable": False,
-        "user_message": "OpenAI request failed. See console for details.",
+        "user_message": f"{provider_label} request failed. See console for details.",
         "details": "",
-        "log_message": f"OpenAI request failed: {err}",
+        "log_message": f"{provider_label} request failed: {err}",
         "category": "unknown",
     }
 
 
-def _show_openai_error(parent, title, error_info, debug_enabled, offer_retry):
+def _show_provider_error(parent, title, error_info, debug_enabled, offer_retry):
     if callable(parent):
         try:
             parent = parent()
@@ -226,13 +243,9 @@ def _show_openai_error(parent, title, error_info, debug_enabled, offer_retry):
 
 
 def _call_openai(config, button_cfg, prompt_values, timeout_seconds):
-    provider = button_cfg.get("provider") or "openai"
     mode = button_cfg.get("mode") or "saved_prompt"
     model = (button_cfg.get("model") or "").strip()
     payload = {"text": {"format": {"type": "json_object"}}}
-
-    if provider != "openai":
-        raise ValueError(f"Provider '{provider}' is not supported yet.")
 
     if mode == "saved_prompt":
         prompt_id = (button_cfg.get("saved_prompt_id") or "").strip()
@@ -259,7 +272,7 @@ def _call_openai(config, button_cfg, prompt_values, timeout_seconds):
     data = json.dumps(payload).encode("utf-8")
     headers = {
         "Content-Type": "application/json",
-        "Authorization": f"Bearer {_get_openai_api_key(config)}",
+        "Authorization": f"Bearer {_get_provider_api_key(config, 'openai')}",
     }
     req = urllib.request.Request(OPENAI_RESPONSES_URL, data=data, headers=headers, method="POST")
 
@@ -270,22 +283,104 @@ def _call_openai(config, button_cfg, prompt_values, timeout_seconds):
         return json.loads(body)
 
 
+def _call_deepseek(config, button_cfg, prompt_values, timeout_seconds):
+    model = (button_cfg.get("model") or "").strip()
+    messages = []
+    if prompt_values["system_prompt"]:
+        messages.append({"role": "system", "content": prompt_values["system_prompt"]})
+    if prompt_values["user_prompt"]:
+        messages.append({"role": "user", "content": prompt_values["user_prompt"]})
+    if not messages:
+        raise ValueError("At least one prompt message is required.")
+
+    payload = {
+        "model": model,
+        "messages": messages,
+        "response_format": {"type": "json_object"},
+        "stream": False,
+    }
+    data = json.dumps(payload).encode("utf-8")
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {_get_provider_api_key(config, 'deepseek')}",
+    }
+    req = urllib.request.Request(
+        DEEPSEEK_CHAT_COMPLETIONS_URL,
+        data=data,
+        headers=headers,
+        method="POST",
+    )
+
+    _log_debug(config, f"DeepSeek request payload: {payload}")
+    with urllib.request.urlopen(req, timeout=timeout_seconds) as resp:
+        body = resp.read().decode("utf-8")
+        _log_debug(config, f"DeepSeek response body: {body}")
+        return json.loads(body)
+
+
+def _call_provider(config, button_cfg, prompt_values, timeout_seconds):
+    provider = button_cfg.get("provider") or "openai"
+    if provider == "deepseek":
+        return _call_deepseek(config, button_cfg, prompt_values, timeout_seconds)
+    if provider == "openai":
+        return _call_openai(config, button_cfg, prompt_values, timeout_seconds)
+    raise ValueError(f"Provider '{provider}' is not supported.")
+
+
+def _extract_provider_output_text(button_cfg, response_json):
+    provider = button_cfg.get("provider") or "openai"
+    if provider == "deepseek":
+        choices = response_json.get("choices") or []
+        if not choices:
+            return ""
+        message = choices[0].get("message") or {}
+        return (message.get("content") or "").strip()
+    return _extract_output_text(response_json)
+
+
+def _validate_button_request(button_cfg):
+    provider = button_cfg.get("provider") or "openai"
+    mode = button_cfg.get("mode") or "saved_prompt"
+
+    if provider == "openai":
+        if mode == "saved_prompt" and not (button_cfg.get("saved_prompt_id") or "").strip():
+            return "Button is missing saved_prompt_id."
+        if mode == "manual" and not (button_cfg.get("model") or "").strip():
+            return "Button is missing model for manual mode."
+        return None
+
+    if provider == "deepseek":
+        if mode != "manual":
+            return "DeepSeek currently supports manual mode only."
+        if not (button_cfg.get("model") or "").strip():
+            return "Button is missing model for manual mode."
+        return None
+
+    return f"Provider '{provider}' is not supported."
+
+
 def _handle_response(editor, note_id, button_cfg, response_json, config):
-    output_text = _extract_output_text(response_json)
+    provider = button_cfg.get("provider") or "openai"
+    provider_label = _provider_label(provider)
+    output_text = _extract_provider_output_text(button_cfg, response_json)
     if not output_text:
-        showWarning("OpenAI returned no text output.")
+        showWarning(f"{provider_label} returned no text output.")
         return
 
     try:
         result = json.loads(output_text)
     except json.JSONDecodeError:
         _log_error(config, "Failed to parse JSON response.")
-        showWarning("OpenAI response was not valid JSON.")
+        showWarning(f"{provider_label} response was not valid JSON.")
         return
 
     success = result.get("success")
     if success is not True:
-        message = result.get("error") or result.get("message") or "OpenAI reported success=false."
+        message = (
+            result.get("error")
+            or result.get("message")
+            or f"{provider_label} reported success=false."
+        )
         showWarning(message)
         return
 
@@ -343,15 +438,18 @@ def _handle_response(editor, note_id, button_cfg, response_json, config):
 def _run_button(editor, button_cfg):
     config = _get_config()
     button_cfg = normalize_button(button_cfg)
-    api_key = _get_openai_api_key(config)
-    if not api_key:
-        showWarning("OpenAI API key not set. Set providers.openai_api_key in config or OPENAI_ANKI_API_KEY.")
-        return
-
     provider = button_cfg.get("provider") or "openai"
-    mode = button_cfg.get("mode") or "saved_prompt"
-    if provider != "openai":
-        showWarning(f"Provider '{provider}' is not supported yet.")
+    provider_label = _provider_label(provider)
+    api_key = _get_provider_api_key(config, provider)
+    if not api_key:
+        if provider == "deepseek":
+            showWarning(
+                "DeepSeek API key not set. Set providers.deepseek_api_key in config or DEEPSEEK_ANKI_API_KEY."
+            )
+        else:
+            showWarning(
+                "OpenAI API key not set. Set providers.openai_api_key in config or OPENAI_ANKI_API_KEY."
+            )
         return
 
     if editor.note is None:
@@ -361,18 +459,16 @@ def _run_button(editor, button_cfg):
     system_prompt = _expand_fields(button_cfg.get("system_prompt") or "", editor.note, config)
     user_prompt = _expand_fields(button_cfg.get("user_prompt") or "", editor.note, config)
     system_prompt, user_prompt = _ensure_json_instruction(system_prompt, user_prompt)
-    if mode == "saved_prompt" and not (button_cfg.get("saved_prompt_id") or "").strip():
-        showWarning("Button is missing saved_prompt_id.")
-        return
-    if mode == "manual" and not (button_cfg.get("model") or "").strip():
-        showWarning("Button is missing model for manual mode.")
+    validation_error = _validate_button_request(button_cfg)
+    if validation_error:
+        showWarning(validation_error)
         return
     note_id = editor.note.id
     timeout_seconds = _request_timeout_seconds(config)
 
     def start_request(attempt):
         def task():
-            return _call_openai(
+            return _call_provider(
                 config,
                 button_cfg,
                 {"system_prompt": system_prompt, "user_prompt": user_prompt},
@@ -385,12 +481,12 @@ def _run_button(editor, button_cfg):
             try:
                 response_json = future.result()
             except Exception as err:
-                error_info = _classify_openai_error(err, timeout_seconds)
+                error_info = _classify_provider_error(provider, err, timeout_seconds)
                 _log_error(config, error_info["log_message"], include_traceback=False)
                 if error_info["retryable"] and attempt <= SINGLE_NOTE_RETRY_ATTEMPTS:
-                    if _show_openai_error(
+                    if _show_provider_error(
                         getattr(editor, "parentWindow", None),
-                        "OpenAI Request Failed",
+                        f"{provider_label} Request Failed",
                         error_info,
                         _debug_enabled(config),
                         offer_retry=True,
@@ -398,9 +494,9 @@ def _run_button(editor, button_cfg):
                         start_request(attempt + 1)
                     return
                 if not error_info["retryable"] or attempt > SINGLE_NOTE_RETRY_ATTEMPTS:
-                    _show_openai_error(
+                    _show_provider_error(
                         getattr(editor, "parentWindow", None),
-                        "OpenAI Request Failed",
+                        f"{provider_label} Request Failed",
                         error_info,
                         _debug_enabled(config),
                         offer_retry=False,
@@ -410,7 +506,7 @@ def _run_button(editor, button_cfg):
             _handle_response(editor, note_id, button_cfg, response_json, config)
 
         mw.progress.start(
-            label=f"OpenAI update in progress… (timeout {timeout_seconds}s)",
+            label=f"{provider_label} update in progress... (timeout {timeout_seconds}s)",
             immediate=True,
         )
         mw.taskman.run_in_background(task, on_done)
@@ -421,21 +517,22 @@ def _run_button(editor, button_cfg):
 def _run_button_bulk(browser, button_cfg):
     config = _get_config()
     button_cfg = normalize_button(button_cfg)
-    api_key = _get_openai_api_key(config)
-    if not api_key:
-        showWarning("OpenAI API key not set. Set providers.openai_api_key in config or OPENAI_ANKI_API_KEY.")
-        return
-
     provider = button_cfg.get("provider") or "openai"
-    mode = button_cfg.get("mode") or "saved_prompt"
-    if provider != "openai":
-        showWarning(f"Provider '{provider}' is not supported yet.")
+    provider_label = _provider_label(provider)
+    api_key = _get_provider_api_key(config, provider)
+    if not api_key:
+        if provider == "deepseek":
+            showWarning(
+                "DeepSeek API key not set. Set providers.deepseek_api_key in config or DEEPSEEK_ANKI_API_KEY."
+            )
+        else:
+            showWarning(
+                "OpenAI API key not set. Set providers.openai_api_key in config or OPENAI_ANKI_API_KEY."
+            )
         return
-    if mode == "saved_prompt" and not (button_cfg.get("saved_prompt_id") or "").strip():
-        showWarning("Button is missing saved_prompt_id.")
-        return
-    if mode == "manual" and not (button_cfg.get("model") or "").strip():
-        showWarning("Button is missing model for manual mode.")
+    validation_error = _validate_button_request(button_cfg)
+    if validation_error:
+        showWarning(validation_error)
         return
 
     note_ids = browser.selectedNotes()
@@ -447,7 +544,7 @@ def _run_button_bulk(browser, button_cfg):
     total = len(note_ids)
     timeout_seconds = _request_timeout_seconds(config)
     cancel_event = threading.Event()
-    progress_dialog = QProgressDialog("OpenAI bulk update…", "Cancel", 0, total, browser)
+    progress_dialog = QProgressDialog(f"{provider_label} bulk update...", "Cancel", 0, total, browser)
     progress_dialog.setWindowTitle(ADDON_NAME)
     progress_dialog.setWindowModality(Qt.WindowModality.ApplicationModal)
     progress_dialog.setAutoClose(False)
@@ -488,7 +585,7 @@ def _run_button_bulk(browser, button_cfg):
             response_json = None
             for attempt in range(BULK_RETRY_ATTEMPTS + 1):
                 try:
-                    response_json = _call_openai(
+                    response_json = _call_provider(
                         config,
                         button_cfg,
                         {"system_prompt": system_prompt, "user_prompt": user_prompt},
@@ -496,10 +593,10 @@ def _run_button_bulk(browser, button_cfg):
                     )
                     break
                 except Exception as err:
-                    error_info = _classify_openai_error(err, timeout_seconds)
+                    error_info = _classify_provider_error(provider, err, timeout_seconds)
                     _log_error(
                         config,
-                        f"OpenAI request failed for note {note_id}. {error_info['log_message']}",
+                        f"{provider_label} request failed for note {note_id}. {error_info['log_message']}",
                         include_traceback=False,
                     )
                     if attempt < BULK_RETRY_ATTEMPTS and error_info["retryable"]:
@@ -519,7 +616,7 @@ def _run_button_bulk(browser, button_cfg):
             if response_json is None:
                 continue
 
-            output_text = _extract_output_text(response_json)
+            output_text = _extract_provider_output_text(button_cfg, response_json)
             if not output_text:
                 _log_error(config, f"No output text for note {note_id}.")
                 result["failed"] += 1
@@ -533,7 +630,7 @@ def _run_button_bulk(browser, button_cfg):
                 continue
 
             if response.get("success") is not True:
-                _log_debug(config, f"OpenAI success=false for note {note_id}.")
+                _log_debug(config, f"{provider_label} success=false for note {note_id}.")
                 result["failed"] += 1
                 continue
 
@@ -557,7 +654,7 @@ def _run_button_bulk(browser, button_cfg):
 
             mw.taskman.run_on_main(
                 lambda i=idx: (
-                    progress_dialog.setLabelText(f"OpenAI update {i}/{total}"),
+                    progress_dialog.setLabelText(f"{provider_label} update {i}/{total}"),
                     progress_dialog.setValue(i),
                 )
             )
@@ -654,7 +751,9 @@ def _show_about():
 def _setup_menu():
     menu = QMenu(ADDON_NAME, mw)
     configure_action = QAction("Configure...", mw)
-    configure_action.setToolTip("Edit add-on config. providers.openai_api_key can be empty if OPENAI_ANKI_API_KEY is set.")
+    configure_action.setToolTip(
+        "Edit add-on config. Provider API keys can be blank if matching environment variables are set."
+    )
     configure_action.triggered.connect(_open_config)
     menu.addAction(configure_action)
     about_action = QAction("About", mw)
