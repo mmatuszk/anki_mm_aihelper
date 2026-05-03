@@ -1,5 +1,6 @@
 import json
 import os
+import platform
 import re
 import urllib.error
 import urllib.request
@@ -68,9 +69,29 @@ TOP_LEVEL_DEFAULTS = {
         "deepseek_api_key": "",
     },
     "debug": False,
+    "log_errors_to_file": True,
+    "log_file_path": "",
     "request_timeout_seconds": 90,
     "buttons": [],
 }
+
+
+def default_log_file_path():
+    system = platform.system().lower()
+    if system == "darwin":
+        base_dir = os.path.join(os.path.expanduser("~"), "Library", "Logs", "Anki2")
+    elif system == "windows":
+        base_dir = os.path.join(
+            os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"),
+            "Anki2",
+            "Logs",
+        )
+    else:
+        state_home = os.environ.get("XDG_STATE_HOME")
+        if not state_home:
+            state_home = os.path.join(os.path.expanduser("~"), ".local", "state")
+        base_dir = os.path.join(state_home, "Anki2", "logs")
+    return os.path.join(base_dir, "openai-card-updater.log")
 
 
 def normalize_button(raw):
@@ -137,6 +158,10 @@ def normalize_config(raw):
             "deepseek_api_key": deepseek_api_key,
         },
         "debug": bool(raw.get("debug")),
+        "log_errors_to_file": bool(
+            raw.get("log_errors_to_file", TOP_LEVEL_DEFAULTS["log_errors_to_file"])
+        ),
+        "log_file_path": str(raw.get("log_file_path") or ""),
         "request_timeout_seconds": max(10, min(300, timeout)),
         "buttons": [normalize_button(button) for button in buttons],
     }
@@ -150,6 +175,8 @@ def exportable_config(config):
     normalized = normalize_config(config)
     return {
         "debug": normalized["debug"],
+        "log_errors_to_file": normalized["log_errors_to_file"],
+        "log_file_path": normalized["log_file_path"],
         "request_timeout_seconds": normalized["request_timeout_seconds"],
         "providers": {},
         "buttons": [exportable_button(button) for button in normalized["buttons"]],
@@ -409,6 +436,21 @@ class OpenAIConfigDialog(QDialog):
         global_form.addRow("", deepseek_helper)
         self.debug_checkbox = QCheckBox("Enable debug logging")
         global_form.addRow("", self.debug_checkbox)
+        self.log_errors_to_file_checkbox = QCheckBox("Log errors to file")
+        global_form.addRow("", self.log_errors_to_file_checkbox)
+        log_file_row = QWidget()
+        log_file_layout = QHBoxLayout(log_file_row)
+        log_file_layout.setContentsMargins(0, 0, 0, 0)
+        self.log_file_path_input = QLineEdit()
+        self.log_file_path_input.setPlaceholderText(default_log_file_path())
+        self.browse_log_file_button = QPushButton("Browse")
+        self.browse_log_file_button.clicked.connect(self._browse_log_file)
+        log_file_layout.addWidget(self.log_file_path_input, 1)
+        log_file_layout.addWidget(self.browse_log_file_button)
+        global_form.addRow("Error Log File", log_file_row)
+        log_file_helper = QLabel("Leave blank to use the default OS log location.")
+        log_file_helper.setWordWrap(True)
+        global_form.addRow("", log_file_helper)
         self.request_timeout_input = QSpinBox()
         self.request_timeout_input.setMinimum(10)
         self.request_timeout_input.setMaximum(300)
@@ -558,6 +600,17 @@ class OpenAIConfigDialog(QDialog):
         )
         self.toggle_deepseek_api_key_button.setText("Hide" if checked else "Show")
 
+    def _browse_log_file(self):
+        current_path = self.log_file_path_input.text().strip() or default_log_file_path()
+        path, _selected_filter = QFileDialog.getSaveFileName(
+            self,
+            "Select Error Log File",
+            current_path,
+            "Log Files (*.log);;Text Files (*.txt);;All Files (*)",
+        )
+        if path:
+            self.log_file_path_input.setText(path)
+
     def _button_provider(self):
         return self.provider_input.currentData()
 
@@ -660,6 +713,10 @@ class OpenAIConfigDialog(QDialog):
         self.openai_api_key_input.setText(providers.get("openai_api_key", ""))
         self.deepseek_api_key_input.setText(providers.get("deepseek_api_key", ""))
         self.debug_checkbox.setChecked(bool(self.working_config.get("debug")))
+        self.log_errors_to_file_checkbox.setChecked(
+            bool(self.working_config.get("log_errors_to_file", True))
+        )
+        self.log_file_path_input.setText(self.working_config.get("log_file_path", ""))
         self.request_timeout_input.setValue(
             int(self.working_config.get("request_timeout_seconds", 90))
         )
@@ -858,6 +915,8 @@ class OpenAIConfigDialog(QDialog):
                 "deepseek_api_key": self.deepseek_api_key_input.text().strip(),
             },
             "debug": self.debug_checkbox.isChecked(),
+            "log_errors_to_file": self.log_errors_to_file_checkbox.isChecked(),
+            "log_file_path": self.log_file_path_input.text().strip(),
             "request_timeout_seconds": self.request_timeout_input.value(),
             "buttons": [normalize_button(button) for button in self.working_config["buttons"]],
         }
@@ -869,6 +928,9 @@ class OpenAIConfigDialog(QDialog):
 
         providers = config.get("providers", {})
         provider_usage = set()
+        log_path = (config.get("log_file_path") or default_log_file_path()).strip()
+        if config.get("log_errors_to_file") and not log_path:
+            blocking.append("Error log file path could not be resolved.")
 
         for index, button in enumerate(config.get("buttons", []), start=1):
             label = f"Button {index}"

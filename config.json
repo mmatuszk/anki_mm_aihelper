@@ -4,6 +4,8 @@
     "deepseek_api_key": ""
   },
   "debug": true,
+  "log_errors_to_file": true,
+  "log_file_path": "",
   "request_timeout_seconds": 90,
   "buttons": [
     {

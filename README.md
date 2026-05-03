@@ -14,6 +14,7 @@ Use provider-driven prompt buttons to update Anki note fields from the editor.
 - Field mapping from JSON response keys to Anki fields.
 - Bulk update from the Browser for selected notes.
 - Configurable request timeout.
+- Optional error logging to an OS-appropriate log file.
 - Manual retry for transient single-note failures.
 - Automatic retry for transient bulk failures.
 - About menu entry showing the installed add-on version.
@@ -43,6 +44,8 @@ The config dialog supports:
   - OpenAI API key
   - DeepSeek API key
   - debug logging
+  - error logging to file
+  - error log file path
   - request timeout
 
 Environment variable convention:
@@ -102,6 +105,8 @@ Mode behavior:
     "deepseek_api_key": ""
   },
   "debug": true,
+  "log_errors_to_file": true,
+  "log_file_path": "",
   "request_timeout_seconds": 90,
   "buttons": [
     {
@@ -190,6 +195,14 @@ Behavior:
   - timeout
   - network error
   - HTTP `429`, `500`, `502`, `503`, `504`
+
+## Error logging
+- `log_errors_to_file` controls whether add-on errors are appended to a log file.
+- `log_file_path` can be left blank to use the OS default:
+  - macOS: `~/Library/Logs/Anki2/openai-card-updater.log`
+  - Windows: `%LOCALAPPDATA%\\Anki2\\Logs\\openai-card-updater.log`
+  - Linux/Unix: `$XDG_STATE_HOME/Anki2/logs/openai-card-updater.log`, or `~/.local/state/Anki2/logs/openai-card-updater.log`
+- `debug` still controls verbose console logging and traceback detail.
 
 ## Notes
 - `saved_prompt_version = "latest"` omits the version field in the OpenAI request.

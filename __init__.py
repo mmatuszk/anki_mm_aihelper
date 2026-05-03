@@ -2,17 +2,19 @@ import json
 import os
 import re
 import socket
+import sys
 import threading
 import time
 import traceback
 import urllib.error
 import urllib.request
+from datetime import datetime
 
 from aqt import gui_hooks, mw
 from aqt.qt import QAction, QMenu, QMessageBox, QProgressDialog, Qt
 from aqt.utils import showWarning, tooltip
 
-from .config_ui import OpenAIConfigDialog, normalize_button, normalize_config
+from .config_ui import OpenAIConfigDialog, default_log_file_path, normalize_button, normalize_config
 
 ADDON_NAME = "OpenAI Card Updater"
 OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
@@ -43,6 +45,34 @@ def _debug_enabled(config):
     return bool(config.get("debug"))
 
 
+def _error_file_logging_enabled(config):
+    return bool(config.get("log_errors_to_file", True))
+
+
+def _log_file_path(config):
+    return (config.get("log_file_path") or default_log_file_path()).strip()
+
+
+def _append_error_log(config, message, traceback_text=""):
+    if not _error_file_logging_enabled(config):
+        return
+    path = _log_file_path(config)
+    if not path:
+        return
+    timestamp = datetime.now().astimezone().isoformat(timespec="seconds")
+    lines = [f"{timestamp} [{ADDON_NAME}] ERROR: {message}"]
+    if traceback_text:
+        lines.append(traceback_text.rstrip())
+    try:
+        log_dir = os.path.dirname(path)
+        if log_dir:
+            os.makedirs(log_dir, exist_ok=True)
+        with open(path, "a", encoding="utf-8") as log_file:
+            log_file.write("\n".join(lines) + "\n")
+    except Exception as err:
+        print(f"[{ADDON_NAME}] ERROR: Could not write error log to {path}: {err}")
+
+
 def _request_timeout_seconds(config):
     raw_timeout = config.get("request_timeout_seconds", DEFAULT_REQUEST_TIMEOUT_SECONDS)
     try:
@@ -59,8 +89,11 @@ def _log_debug(config, message):
 
 def _log_error(config, message, include_traceback=True):
     print(f"[{ADDON_NAME}] ERROR: {message}")
-    if include_traceback and _debug_enabled(config):
+    traceback_text = ""
+    if include_traceback and _debug_enabled(config) and sys.exc_info()[0] is not None:
+        traceback_text = traceback.format_exc()
         traceback.print_exc()
+    _append_error_log(config, message, traceback_text)
 
 
 def _provider_label(provider):

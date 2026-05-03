@@ -18,6 +18,16 @@ Environment variable naming convention:
 debug:
 - true/false. When enabled, logs requests, responses, retries, and errors to the console.
 
+log_errors_to_file:
+- true/false. When enabled, appends add-on errors to a log file.
+
+log_file_path:
+- Optional path to the error log file.
+- Leave blank to use the OS default:
+  - macOS: ~/Library/Logs/Anki2/openai-card-updater.log
+  - Windows: %LOCALAPPDATA%\Anki2\Logs\openai-card-updater.log
+  - Linux/Unix: $XDG_STATE_HOME/Anki2/logs/openai-card-updater.log, or ~/.local/state/Anki2/logs/openai-card-updater.log
+
 request_timeout_seconds:
 - Integer timeout for each provider request. Defaults to 90 seconds.
 
