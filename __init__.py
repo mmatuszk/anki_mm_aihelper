@@ -25,6 +25,8 @@ RETRYABLE_HTTP_STATUS_CODES = {429, 500, 502, 503, 504}
 SINGLE_NOTE_RETRY_ATTEMPTS = 1
 BULK_RETRY_ATTEMPTS = 1
 BULK_RETRY_DELAY_SECONDS = 1.5
+REQUEST_PAYLOAD_LOG_KEY = "_openai_card_updater_request_payload"
+RAW_RESPONSE_LOG_KEY = "_openai_card_updater_raw_response"
 
 
 def _get_config():
@@ -71,6 +73,20 @@ def _append_error_log(config, message, traceback_text=""):
             log_file.write("\n".join(lines) + "\n")
     except Exception as err:
         print(f"[{ADDON_NAME}] ERROR: Could not write error log to {path}: {err}")
+
+
+def _format_provider_exchange(response_json):
+    request_payload = response_json.get(REQUEST_PAYLOAD_LOG_KEY)
+    raw_response = response_json.get(RAW_RESPONSE_LOG_KEY)
+    lines = []
+    if request_payload is not None:
+        lines.append(
+            "Request payload:\n"
+            + json.dumps(request_payload, indent=2, ensure_ascii=False)
+        )
+    if raw_response:
+        lines.append(f"Raw response:\n{raw_response}")
+    return "\n\n".join(lines)
 
 
 def _request_timeout_seconds(config):
@@ -313,7 +329,10 @@ def _call_openai(config, button_cfg, prompt_values, timeout_seconds):
     with urllib.request.urlopen(req, timeout=timeout_seconds) as resp:
         body = resp.read().decode("utf-8")
         _log_debug(config, f"OpenAI response body: {body}")
-        return json.loads(body)
+        response_json = json.loads(body)
+        response_json[REQUEST_PAYLOAD_LOG_KEY] = payload
+        response_json[RAW_RESPONSE_LOG_KEY] = body
+        return response_json
 
 
 def _call_deepseek(config, button_cfg, prompt_values, timeout_seconds):
@@ -348,7 +367,10 @@ def _call_deepseek(config, button_cfg, prompt_values, timeout_seconds):
     with urllib.request.urlopen(req, timeout=timeout_seconds) as resp:
         body = resp.read().decode("utf-8")
         _log_debug(config, f"DeepSeek response body: {body}")
-        return json.loads(body)
+        response_json = json.loads(body)
+        response_json[REQUEST_PAYLOAD_LOG_KEY] = payload
+        response_json[RAW_RESPONSE_LOG_KEY] = body
+        return response_json
 
 
 def _call_provider(config, button_cfg, prompt_values, timeout_seconds):
@@ -414,6 +436,9 @@ def _handle_response(editor, note_id, button_cfg, response_json, config):
             or result.get("message")
             or f"{provider_label} reported success=false."
         )
+        exchange_details = _format_provider_exchange(response_json)
+        log_message = f"{message}\n\n{exchange_details}" if exchange_details else message
+        _log_error(config, log_message, include_traceback=False)
         showWarning(message)
         return
 
