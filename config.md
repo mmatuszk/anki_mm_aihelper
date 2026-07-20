@@ -51,7 +51,9 @@ Button fields:
 - saved_prompt_version: Optional in saved_prompt mode. Defaults to "latest".
 - system_prompt: Used in manual mode. Supports {{FieldName}} expansion.
 - user_prompt: Supports {{FieldName}} expansion.
+- tags_mode: Controls the optional Tags response key. "append" preserves existing tags; "replace" makes the returned tags the complete tag set. Defaults to "append". If Tags is omitted or null, no tags are changed.
 - field_map: Mapping of JSON response keys to Anki field names.
+- Tags response key: Optional. Updates note tags directly and does not need a field_map entry. Accepts an array of strings or a space-separated string.
 
 Response JSON requirements:
 - The response must be valid JSON.

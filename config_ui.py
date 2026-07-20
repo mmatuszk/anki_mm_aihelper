@@ -39,6 +39,10 @@ SUPPORTED_MODES = [
     ("saved_prompt", "Saved Prompt"),
     ("manual", "Manual"),
 ]
+SUPPORTED_TAGS_MODES = [
+    ("append", "Append"),
+    ("replace", "Replace"),
+]
 FIELD_PATTERN = re.compile(r"{{(.*?)}}")
 PROVIDER_MODEL_ENDPOINTS = {
     "openai": "https://api.openai.com/v1/models",
@@ -60,6 +64,7 @@ BUTTON_DEFAULTS = {
     "saved_prompt_version": "latest",
     "system_prompt": "",
     "user_prompt": "",
+    "tags_mode": "append",
     "field_map": {},
 }
 
@@ -116,6 +121,7 @@ def normalize_button(raw):
         ),
         "system_prompt": str(raw.get("system_prompt") or ""),
         "user_prompt": str(raw.get("user_prompt") or raw.get("prompt") or ""),
+        "tags_mode": str(raw.get("tags_mode") or "append"),
         "field_map": {
             str(response_key): str(field_name)
             for response_key, field_name in field_map.items()
@@ -126,6 +132,8 @@ def normalize_button(raw):
         button["mode"] = "manual"
     if button["mode"] not in {"saved_prompt", "manual"}:
         button["mode"] = "saved_prompt"
+    if button["tags_mode"] not in {"append", "replace"}:
+        button["tags_mode"] = "append"
     return button
 
 
@@ -471,10 +479,18 @@ class OpenAIConfigDialog(QDialog):
         for value, label in SUPPORTED_MODES:
             self.mode_input.addItem(label, value)
         self.mode_input.currentIndexChanged.connect(self._update_prompt_mode_ui)
+        self.tags_mode_input = QComboBox()
+        for value, label in SUPPORTED_TAGS_MODES:
+            self.tags_mode_input.addItem(label, value)
+        self.tags_mode_input.setToolTip(
+            "Append preserves existing tags. Replace makes a returned Tags value the note's complete tag set. "
+            "If Tags is omitted from the response, neither mode changes tags."
+        )
         details_form.addRow("Name", self.name_input)
         details_form.addRow("Tooltip", self.tooltip_input)
         details_form.addRow("Provider", self.provider_input)
         details_form.addRow("Mode", self.mode_input)
+        details_form.addRow("Tag handling", self.tags_mode_input)
         right_layout.addWidget(details_group)
 
         prompt_group = QGroupBox("Prompt Configuration")
@@ -740,6 +756,7 @@ class OpenAIConfigDialog(QDialog):
         self.tooltip_input.clear()
         self.provider_input.setCurrentIndex(self.provider_input.findData("openai"))
         self.mode_input.setCurrentIndex(self.mode_input.findData("saved_prompt"))
+        self.tags_mode_input.setCurrentIndex(self.tags_mode_input.findData("append"))
         self.saved_prompt_id_input.clear()
         self.saved_prompt_version_input.clear()
         self.model_input.clear()
@@ -756,6 +773,7 @@ class OpenAIConfigDialog(QDialog):
         button["tooltip"] = self.tooltip_input.text().strip()
         button["provider"] = str(self.provider_input.currentData() or "openai")
         button["mode"] = str(self.mode_input.currentData() or "saved_prompt")
+        button["tags_mode"] = str(self.tags_mode_input.currentData() or "append")
         button["saved_prompt_id"] = self.saved_prompt_id_input.text().strip()
         saved_prompt_version = self.saved_prompt_version_input.text().strip()
         button["saved_prompt_version"] = saved_prompt_version or "latest"
@@ -777,6 +795,7 @@ class OpenAIConfigDialog(QDialog):
         self.tooltip_input.setText(button["tooltip"])
         self.provider_input.setCurrentIndex(self.provider_input.findData(button["provider"]))
         self.mode_input.setCurrentIndex(self.mode_input.findData(button["mode"]))
+        self.tags_mode_input.setCurrentIndex(self.tags_mode_input.findData(button["tags_mode"]))
         self.saved_prompt_id_input.setText(button["saved_prompt_id"])
         version = button.get("saved_prompt_version", "latest")
         self.saved_prompt_version_input.setText("" if version == "latest" else version)

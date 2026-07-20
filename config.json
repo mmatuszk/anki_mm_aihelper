@@ -9,8 +9,30 @@
   "request_timeout_seconds": 90,
   "buttons": [
     {
+      "name": "FV",
+      "tooltip": "AI French Vocabulary Update",
+      "tags_mode": "replace",
+      "provider": "openai",
+      "mode": "manual",
+      "model": "gpt-5.3-chat-latest",
+      "saved_prompt_id": "",
+      "saved_prompt_version": "latest",
+      "system_prompt": "You are an expert French lexicographer and teacher creating concise Anki vocabulary notes for an intermediate learner.\n\nYou will receive one French word or short expression plus an optional PromptHint. Preserve the existing French field: do not return or rewrite it. If PromptHint is present, use it to select the intended meaning and part of speech; otherwise choose the most common learner-relevant sense. Keep every output field consistent with that one sense.\n\nTasks:\n1. English: give a concise, natural English translation or gloss.\n2. PartOfSpeech: return exactly one of: noun, verb, adjective, adverb, pronoun, determiner, preposition, conjunction, interjection, numeral, auxiliary verb, phrase.\n3. For a noun:\n   - Gender must be exactly masculine or feminine.\n   - IndefiniteForm must be the complete natural indefinite noun phrase: normally un or une for a singular count noun, an appropriate partitive for a mass noun, or des for a plural-only noun.\n   - DefiniteForm must be the complete natural noun phrase with le, la, l', or les and correct elision.\n   - Use the same canonical noun form and sense in both fields.\n4. For a non-noun, Gender, IndefiniteForm, DefiniteForm, and ArticleSentence must be empty strings.\n5. ExampleFrench: write one natural, practical French sentence at approximately CEFR B1 level that clearly demonstrates the selected meaning.\n6. ArticleSentence creates the noun-gender test:\n   - For a singular noun that naturally takes un or une, ExampleFrench must contain the exact IndefiniteForm as a natural noun phrase.\n   - ArticleSentence must be identical to ExampleFrench except that the un or une immediately before the target noun is replaced by exactly three underscores: ___.\n   - ArticleSentence must contain no English.\n   - Do not include an adjective, participle, pronoun, possessive, demonstrative, or other agreement cue that reveals the target noun's gender. The missing un or une must be the only gender clue.\n   - Use a context in which the requested choice between un and une is natural and unambiguous.\n   - If the noun is plural-only, a mass noun, or otherwise cannot naturally be tested with un versus une, return an empty ArticleSentence and write an ordinary natural ExampleFrench.\n\nAccuracy rules:\n- Distinguish homographs whose meaning or gender differs, using PromptHint when supplied.\n- Do not assign noun gender merely because the spelling can also function as a noun.\n- Use standard contemporary French.\n- Return plain text without Markdown or HTML.\n\nSTRICT OUTPUT RULES:\n- Return only valid JSON with no commentary outside it.\n- Include every key:\n{\n  \"success\": boolean,\n  \"error\": string,\n  \"English\": string,\n  \"PartOfSpeech\": string,\n  \"Gender\": string,\n  \"IndefiniteForm\": string,\n  \"DefiniteForm\": string,\n  \"ExampleFrench\": string,\n  \"ArticleSentence\": string\n}\n- On success, set success to true and error to an empty string.\n- On failure, set success to false, explain why in error, and return empty strings for all other output fields.\n\nBefore returning, verify that noun forms agree with Gender, non-noun grammar fields are empty, ArticleSentence differs from ExampleFrench only by the un/une blank, and the sentence contains no gender-revealing agreement cue.",
+      "user_prompt": "French vocabulary item: {{French}}\n\nOptional prompt hint:\n{{PromptHint}}",
+      "field_map": {
+        "English": "English",
+        "PartOfSpeech": "PartOfSpeech",
+        "Gender": "Gender",
+        "IndefiniteForm": "IndefiniteForm",
+        "DefiniteForm": "DefiniteForm",
+        "ExampleFrench": "ExampleFrench",
+        "ArticleSentence": "ArticleSentence"
+      }
+    },
+    {
       "name": "CV",
       "tooltip": "AI Chinese Vocabulary Update",
+      "tags_mode": "replace",
       "provider": "openai",
       "mode": "manual",
       "model": "gpt-5.3-chat-latest",
@@ -31,6 +53,7 @@
     {
       "name": "M1",
       "tooltip": "AI Chinese Vocabulary Update",
+      "tags_mode": "replace",
       "provider": "openai",
       "mode": "saved_prompt",
       "model": "",
@@ -50,6 +73,7 @@
     {
       "name": "M2",
       "tooltip": "AI Chinese Grammar Update",
+      "tags_mode": "replace",
       "provider": "openai",
       "mode": "saved_prompt",
       "model": "",
@@ -66,6 +90,7 @@
     {
       "name": "CC",
       "tooltip": "AI Chinese Contrast Set",
+      "tags_mode": "replace",
       "provider": "openai",
       "mode": "manual",
       "model": "gpt-5.3-chat-latest",

@@ -27,6 +27,7 @@ BULK_RETRY_ATTEMPTS = 1
 BULK_RETRY_DELAY_SECONDS = 1.5
 REQUEST_PAYLOAD_LOG_KEY = "_openai_card_updater_request_payload"
 RAW_RESPONSE_LOG_KEY = "_openai_card_updater_raw_response"
+RESPONSE_TAGS_KEY = "Tags"
 
 
 def _get_config():
@@ -165,6 +166,54 @@ def _ensure_json_instruction(system_text, user_text):
     if not user_text:
         return system_text, "Return output as JSON."
     return system_text, f"{user_text}\n\nReturn output as JSON."
+
+
+def _parse_response_tags(response):
+    if RESPONSE_TAGS_KEY not in response:
+        return [], None
+
+    raw_tags = response[RESPONSE_TAGS_KEY]
+    if raw_tags is None:
+        return [], None
+    if isinstance(raw_tags, str):
+        values = [raw_tags]
+    elif isinstance(raw_tags, list):
+        if not all(isinstance(value, str) for value in raw_tags):
+            return [], f"{RESPONSE_TAGS_KEY} must contain strings only."
+        values = raw_tags
+    else:
+        return [], f"{RESPONSE_TAGS_KEY} must be an array or a space-separated string."
+
+    tags = []
+    seen = set()
+    for value in values:
+        for tag in value.split():
+            if tag not in seen:
+                tags.append(tag)
+                seen.add(tag)
+    return tags, None
+
+
+def _apply_response_tags(note, response, tags_mode="append"):
+    if RESPONSE_TAGS_KEY not in response or response[RESPONSE_TAGS_KEY] is None:
+        return [], [], None
+
+    tags, error = _parse_response_tags(response)
+    if error:
+        return [], [], error
+
+    tags_before = list(note.tags)
+    if tags_mode == "replace":
+        desired_tags = set(tags)
+        for tag in list(note.tags):
+            if tag not in desired_tags:
+                note.remove_tag(tag)
+    for tag in tags:
+        note.add_tag(tag)
+    tags_after = list(note.tags)
+    added_tags = [tag for tag in tags_after if tag not in tags_before]
+    removed_tags = [tag for tag in tags_before if tag not in tags_after]
+    return added_tags, removed_tags, None
 
 
 def _extract_output_text(response_json):
@@ -462,18 +511,31 @@ def _handle_response(editor, note_id, button_cfg, response_json, config):
         note[field_name] = str(result[response_key])
         updated_fields.append(field_name)
 
+    tags_mode = button_cfg.get("tags_mode") or "append"
+    added_tags, removed_tags, tags_error = _apply_response_tags(note, result, tags_mode)
+
+    update_messages = []
+    if updated_fields:
+        update_messages.append(f"Updated fields: {', '.join(updated_fields)}")
+    if added_tags:
+        update_messages.append(f"Added tags: {', '.join(added_tags)}")
+    if removed_tags:
+        update_messages.append(f"Removed tags: {', '.join(removed_tags)}")
+
     def after_save():
         try:
             editor.loadNote(note)
         except TypeError:
             editor.loadNote()
-        tooltip(f"Updated fields: {', '.join(updated_fields)}", period=3000)
+        tooltip("; ".join(update_messages), period=3000)
         if missing_keys:
             showWarning(f"Missing response keys: {', '.join(missing_keys)}")
         if missing_fields:
             showWarning(f"Missing note fields: {', '.join(missing_fields)}")
+        if tags_error:
+            showWarning(tags_error)
 
-    if updated_fields:
+    if updated_fields or added_tags or removed_tags:
         if note.id:
             note.flush()
             after_save()
@@ -486,11 +548,13 @@ def _handle_response(editor, note_id, button_cfg, response_json, config):
                 except TypeError:
                     editor.saveNow(True, after_save)
     else:
-        tooltip("No fields were updated.", period=3000)
+        tooltip("No fields or tags were updated.", period=3000)
         if missing_keys:
             showWarning(f"Missing response keys: {', '.join(missing_keys)}")
         if missing_fields:
             showWarning(f"Missing note fields: {', '.join(missing_fields)}")
+        if tags_error:
+            showWarning(tags_error)
 
 
 def _run_button(editor, button_cfg):
@@ -618,6 +682,8 @@ def _run_button_bulk(browser, button_cfg):
             "cancelled": False,
             "retried": 0,
             "timed_out": 0,
+            "tags_added": 0,
+            "tags_removed": 0,
         }
         for idx, note_id in enumerate(note_ids, start=1):
             if cancel_event.is_set():
@@ -625,10 +691,6 @@ def _run_button_bulk(browser, button_cfg):
                 break
 
             note = mw.col.get_note(note_id)
-
-            if not field_map:
-                result["skipped"] += 1
-                continue
 
             missing_fields = [f for f in field_map.values() if f not in note]
             if missing_fields:
@@ -701,6 +763,17 @@ def _run_button_bulk(browser, button_cfg):
                 note[field_name] = str(response[response_key])
                 updated_any = True
 
+            tags_mode = button_cfg.get("tags_mode") or "append"
+            added_tags, removed_tags, tags_error = _apply_response_tags(
+                note, response, tags_mode
+            )
+            if added_tags or removed_tags:
+                updated_any = True
+                result["tags_added"] += len(added_tags)
+                result["tags_removed"] += len(removed_tags)
+            if tags_error:
+                _log_debug(config, f"Invalid Tags value for note {note_id}: {tags_error}")
+
             if missing_keys:
                 _log_debug(config, f"Missing response keys for note {note_id}: {missing_keys}")
 
@@ -740,6 +813,10 @@ def _run_button_bulk(browser, button_cfg):
             f"Updated: {result['updated']}, Skipped: {result['skipped']}, "
             f"Failed: {result['failed']}, Retried: {result['retried']}"
         )
+        if result["tags_added"]:
+            summary += f", Tags added: {result['tags_added']}"
+        if result["tags_removed"]:
+            summary += f", Tags removed: {result['tags_removed']}"
         if result["timed_out"]:
             summary += f", Timeouts: {result['timed_out']}"
         if result.get("cancelled"):

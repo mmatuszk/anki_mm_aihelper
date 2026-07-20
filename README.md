@@ -12,6 +12,7 @@ Use provider-driven prompt buttons to update Anki note fields from the editor.
 - Field expansion with `{{FieldName}}` in `system_prompt` and `user_prompt`.
 - Provider model lookup in the config dialog, with autocomplete for fetched model ids.
 - Field mapping from JSON response keys to Anki fields.
+- Optional `Tags` response key that updates Anki tags without field mapping.
 - Bulk update from the Browser for selected notes.
 - Configurable request timeout.
 - Optional error logging to an OS-appropriate log file.
@@ -86,6 +87,7 @@ Each button now uses:
 - `saved_prompt_version`
 - `system_prompt`
 - `user_prompt`
+- `tags_mode` (`append` or `replace`)
 - `field_map`
 
 Mode behavior:
@@ -161,11 +163,22 @@ Provider responses must be valid JSON and include:
 
 ```json
 {
-  "success": true
+  "success": true,
+  "Tags": ["topic::health", "source::duolingo"]
 }
 ```
 
 Additional keys can be mapped to Anki fields via `field_map`.
+
+`Tags` is reserved and needs no `field_map` entry. It is optional and may be
+either a JSON array of tag strings or one space-separated string. Each button's
+`tags_mode` controls how it is applied:
+
+- `append` (the default for new and legacy buttons) adds returned tags and preserves existing tags.
+- `replace` makes the returned tags the note's complete tag set.
+
+If `Tags` is omitted or `null`, tags remain unchanged in both modes. In `replace`
+mode, an explicit empty array (`"Tags": []`) removes all tags.
 
 If `success` is `false`, the add-on shows `error` or `message` from the response.
 
